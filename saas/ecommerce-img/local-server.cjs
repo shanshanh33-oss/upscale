@@ -13,13 +13,8 @@ const MIME = {
   '.svg': 'image/svg+xml',
 };
 
-function logDebug(msg, data) {
-  const line = `[${new Date().toISOString()}] ${msg}: ${JSON.stringify(data)}\n`;
-  fs.appendFileSync('/tmp/server-debug.log', line);
-}
-
 async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, enhance) {
-  const meta = await sharp(buffer, { unlimited: true }).metadata();
+  const meta = await sharp(buffer, { limitInputPixels: 0 }).metadata();
   const origW = meta.width;
   const origH = meta.height;
   const scaleX = newW / origW;
@@ -28,7 +23,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
   const passes = avgScale >= 8 ? 3 : avgScale >= 4 ? 2 : avgScale >= 2.5 ? 2 : 1;
 
   if (passes <= 1) {
-    let pipeline = sharp(buffer, { unlimited: true }).resize(newW, newH, {
+    let pipeline = sharp(buffer, { limitInputPixels: 0 }).resize(newW, newH, {
       kernel: sharp.kernel.lanczos3, withoutEnlargement: false,
       fit: fitMode, background: { r: 255, g: 255, b: 255, alpha: 1 },
     });
@@ -42,7 +37,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
     const remaining = passes - i;
     const stepW = Math.round(cw * Math.pow(scaleX, 1 / remaining));
     const stepH = Math.round(ch * Math.pow(scaleY, 1 / remaining));
-    let pipeline = sharp(current, { unlimited: true }).resize(stepW, stepH, {
+    let pipeline = sharp(current, { limitInputPixels: 0 }).resize(stepW, stepH, {
       kernel: sharp.kernel.lanczos3, withoutEnlargement: false,
       fit: fitMode, background: { r: 255, g: 255, b: 255, alpha: 1 },
     });
@@ -53,20 +48,15 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
     current = await pipeline.toBuffer();
     cw = stepW; ch = stepH;
   }
-  return await sharp(current, { unlimited: true }).toFormat(outFmt, outFmt === 'jpeg' ? { quality } : {}).toBuffer();
+  return await sharp(current, { limitInputPixels: 0 }).toFormat(outFmt, outFmt === 'jpeg' ? { quality } : {}).toBuffer();
 }
 
 async function handleAPI(body) {
   const { mode, image, format, quality, enhance, fit } = body;
-  logDebug('handleAPI body keys', Object.keys(body));
-  logDebug('image type/size', { type: typeof image, len: image ? image.length : 0, starts: image ? image.substring(0, 30) : null });
-  if (!image) {
-    logDebug('IMAGE IS FALSY!', { body: body });
-    return { status: 400, data: { error: 'No image data' } };
-  }
+  if (!image) return { status: 400, data: { error: 'No image data' } };
   const buffer = Buffer.from(image, 'base64');
-  const metadata = await sharp(buffer, { unlimited: true }).metadata();
-  const outFmt = format === "jpeg" ? "jpeg" : format === "webp" ? "webp" : "png";
+  const metadata = await sharp(buffer, { limitInputPixels: 0 }).metadata();
+  const outFmt = format === 'jpeg' ? 'jpeg' : format === 'webp' ? 'webp' : 'png';
   const q = parseInt(quality) || 95;
 
   const { scale, targetWidth, targetHeight } = body;
@@ -79,7 +69,7 @@ async function handleAPI(body) {
 
   const fitMode = fit === 'fill' ? 'fill' : fit === 'cover' ? 'cover' : 'inside';
   const result = await multiPassUpscale(buffer, newW, newH, fitMode, outFmt, q, enhance === true);
-  const resultMeta = await sharp(result, { unlimited: true }).metadata();
+  const resultMeta = await sharp(result, { limitInputPixels: 0 }).metadata();
 
   return {
     status: 200,
@@ -97,10 +87,14 @@ http.createServer((req, res) => {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
-      logDebug('raw body first 300', body.substring(0, 300));
-      logDebug('raw body length', body.length);
-      try { const r = await handleAPI(JSON.parse(body)); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r.data)); }
-      catch (e) { logDebug('parse error', e.message); res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: e.message })); }
+      try {
+        const r = await handleAPI(JSON.parse(body));
+        res.writeHead(r.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(r.data));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
     });
     return;
   }
@@ -113,9 +107,14 @@ http.createServer((req, res) => {
     if (err) {
       fs.readFile(path.join(DIST, 'index.html'), (e2, d2) => {
         if (e2) { res.writeHead(404); res.end('N'); return; }
-        res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' }); res.end(d2);
+        res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' });
+        res.end(d2);
       }); return;
     }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream', 'Cache-Control': 'no-cache, no-store, must-revalidate' }); res.end(data);
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+    });
+    res.end(data);
   });
 }).listen(5173, '0.0.0.0', () => console.log('Server on 5173'));

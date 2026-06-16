@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 
 async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, enhance) {
-  const meta = await sharp(buffer, { unlimited: true }).metadata();
+  const meta = await sharp(buffer, { limitInputPixels: 0 }).metadata();
   const origW = meta.width;
   const origH = meta.height;
   const scaleX = newW / origW;
@@ -13,7 +13,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
     avgScale >= 2.5 ? 2 : 1;
 
   if (passes <= 1) {
-    let pipeline = sharp(buffer, { unlimited: true }).resize(newW, newH, {
+    let pipeline = sharp(buffer, { limitInputPixels: 0 }).resize(newW, newH, {
       kernel: sharp.kernel.lanczos3,
       withoutEnlargement: false,
       fit: fitMode,
@@ -33,7 +33,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
     const remaining = passes - i;
     const stepW = Math.round(cw * Math.pow(scaleX, 1 / remaining));
     const stepH = Math.round(ch * Math.pow(scaleY, 1 / remaining));
-    let pipeline = sharp(current, { unlimited: true }).resize(stepW, stepH, {
+    let pipeline = sharp(current, { limitInputPixels: 0 }).resize(stepW, stepH, {
       kernel: sharp.kernel.lanczos3,
       withoutEnlargement: false,
       fit: fitMode,
@@ -52,7 +52,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
     ch = stepH;
   }
 
-  return await sharp(current, { unlimited: true }).toFormat(outFmt, outFmt === 'jpeg' ? { quality } : {}).toBuffer();
+  return await sharp(current, { limitInputPixels: 0 }).toFormat(outFmt, outFmt === 'jpeg' ? { quality } : {}).toBuffer();
 }
 
 export default async function handler(req, res) {
@@ -67,7 +67,7 @@ export default async function handler(req, res) {
     }
 
     const buffer = Buffer.from(image, 'base64');
-    const metadata = await sharp(buffer, { unlimited: true }).metadata();
+    const metadata = await sharp(buffer, { limitInputPixels: 0 }).metadata();
 
     let newW, newH;
     if (mode === 'target' && targetWidth && targetHeight) {
