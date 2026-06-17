@@ -188,7 +188,7 @@ function App() {
   const handleDownload = () => {
     if (!result) return
     const a = document.createElement('a')
-    const ext = format === 'jpeg' ? 'jpg' : 'png'
+    const ext = format === "jpeg" ? "jpg" : format === "webp" ? "webp" : "png"
     const name = file ? file.name.replace(/\.[^.]+$/, '') : 'image'
     a.download = `${name}_${resultDims ? resultDims.w + 'x' + resultDims.h : 'upscaled'}.${ext}`
     a.href = result; a.click()

@@ -28,7 +28,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
       fit: fitMode, background: { r: 255, g: 255, b: 255, alpha: 1 },
     });
     if (enhance) pipeline = pipeline.sharpen({ sigma: 0.8, m1: 0, m2: 3, x1: 0, y2: 8, y3: 4 });
-    return await pipeline.toFormat(outFmt, outFmt === 'jpeg' ? { quality } : {}).toBuffer();
+    return await pipeline.toFormat(outFmt, outFmt === "jpeg" ? { quality } : outFmt === "webp" ? { quality } : {}).toBuffer();
   }
 
   let current = buffer;
@@ -48,7 +48,7 @@ async function multiPassUpscale(buffer, newW, newH, fitMode, outFmt, quality, en
     current = await pipeline.toBuffer();
     cw = stepW; ch = stepH;
   }
-  return await sharp(current, { limitInputPixels: 0 }).toFormat(outFmt, outFmt === 'jpeg' ? { quality } : {}).toBuffer();
+  return await sharp(current, { limitInputPixels: 0 }).toFormat(outFmt, outFmt === "jpeg" ? { quality } : outFmt === "webp" ? { quality } : {}).toBuffer();
 }
 
 async function handleAPI(body) {
