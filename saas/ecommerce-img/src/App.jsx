@@ -31,12 +31,28 @@ function App() {
   const [error, setError] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const [showModal, setShowModal] = useState(false)
+  const [modalMode, setModalMode] = useState('compare') // 'single' | 'compare'
   const [compareZoom, setCompareZoom] = useState(1)
+  const [imgZoom, setImgZoom] = useState(1)
+  const [imgPan, setImgPan] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  const panStart = useRef({ x: 0, y: 0 })
+  const panOrigin = useRef({ x: 0, y: 0 })
   const fileRef = useRef(null)
   const leftScrollRef = useRef(null)
   const rightScrollRef = useRef(null)
   const syncingRef = useRef(false)
   const [syncedScroll, setSyncedScroll] = useState(true)
+  const leftImgRef = useRef(null)
+  const rightImgRef = useRef(null)
+  const leftViewer = useRef({ z:1, x:0, y:0, drag:false, mx:0, my:0, sx:0, sy:0 })
+  const rightViewer = useRef({ z:1, x:0, y:0, drag:false, mx:0, my:0, sx:0, sy:0 })
+  const compareZoomRef = useRef(1)
+  const singleViewer = useRef({ z:1, x:0, y:0, drag:false, mx:0, my:0, sx:0, sy:0 })
+  const singleImgRef = useRef(null)
+  const fsLeftScrollRef = useRef(null)
+  const fsRightScrollRef = useRef(null)
+  const fsSyncingRef = useRef(false)
 
   // 参数变化时自动清空旧结果
   useEffect(() => {
@@ -449,7 +465,7 @@ function App() {
                     requestAnimationFrame(() => { syncingRef.current = false; });
                   }}
                   className="overflow-auto max-h-72 bg-gray-50 rounded-lg border border-gray-100 cursor-pointer hover:border-indigo-200 transition-colors"
-                  onClick={() => setShowModal(true)}>
+                  onClick={() => { setModalMode('compare'); setShowModal(true); }}>
                   <img src={preview} alt="原图"
                     style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left', minWidth: '100%' }}
                     className="block" />
@@ -476,7 +492,7 @@ function App() {
                     requestAnimationFrame(() => { syncingRef.current = false; });
                   }}
                   className="overflow-auto max-h-72 bg-gray-50 rounded-lg border border-gray-100 cursor-pointer hover:border-indigo-200 transition-colors"
-                  onClick={() => setShowModal(true)}>
+                  onClick={() => { setModalMode('compare'); setShowModal(true); }}>
                   <img src={result} alt="放大后"
                     style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left', minWidth: '100%' }}
                     className="block" />
@@ -499,7 +515,7 @@ function App() {
 
             <div className="rounded-xl overflow-hidden bg-gray-50 border border-gray-100">
               <img src={result} alt="放大结果" className="w-full h-auto max-h-96 object-contain mx-auto cursor-pointer"
-                onClick={() => setShowModal(true)} />
+                onClick={() => { setModalMode('single'); setShowModal(true); setImgZoom(1); setImgPan({x:0,y:0}); }} />
             </div>
 
             <button onClick={handleDownload}
@@ -522,34 +538,154 @@ function App() {
 
       <footer className="text-center py-6 text-xs text-gray-400 border-t border-gray-100 mt-8">图片放大工具 &middot; 基于 Sharp 引擎</footer>
 
-      {/* 全屏查看 - 前后对比 */}
-      {showModal && result && (
-        <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center" onClick={() => setShowModal(false)}>
-          <div className="flex flex-col sm:flex-row gap-4 sm:gap-6 p-4 sm:p-8 max-w-[98vw] max-h-[95vh] overflow-auto items-start">
+      {/* 全屏查看 - 单图模式 (可缩放拖动 - 使用 ref 防崩溃) */}
+      {showModal && modalMode === 'single' && result && (
+        <div className="fixed inset-0 z-50 bg-black/95 flex flex-col select-none"
+          onMouseUp={() => { if (singleViewer.current) singleViewer.current.drag = false; }}
+          onMouseLeave={() => { if (singleViewer.current) singleViewer.current.drag = false; }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) { setShowModal(false); }
+          }}>
+          {/* 顶部导航栏 */}
+          <div className="flex items-center justify-between px-5 py-3 bg-black/60 backdrop-blur-sm border-b border-white/10 shrink-0">
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-semibold text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded">放大结果</span>
+              <span className="text-[11px] text-white/40">{resultDims.w}&times;{resultDims.h}px</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={(e) => { e.stopPropagation(); const v = singleViewer.current; v.z = 1; v.x = 0; v.y = 0; if (singleImgRef.current) singleImgRef.current.style.transform = 'scale(1)'; }}
+                className="text-[11px] px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-colors">
+                重置
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); setShowModal(false); }}
+                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/70 hover:text-white transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* 图片查看区 */}
+          <div className="flex-1 flex items-center justify-center overflow-hidden bg-black/30"
+            onWheel={(e) => {
+              e.preventDefault();
+              const v = singleViewer.current;
+              const oldZ = v.z;
+              const newZ = Math.max(0.5, Math.min(20, v.z + (e.deltaY > 0 ? -0.2 : 0.2)));
+              const ratio = newZ / oldZ;
+              v.z = newZ;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+              v.x = mx - (mx - v.x) * ratio;
+              v.y = my - (my - v.y) * ratio;
+              if (singleImgRef.current) singleImgRef.current.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.z})`;
+            }}
+            onMouseDown={(e) => {
+              const v = singleViewer.current;
+              if (v.z <= 1) return;
+              v.drag = true; v.mx = e.clientX; v.my = e.clientY; v.sx = v.x; v.sy = v.y;
+            }}
+            onMouseMove={(e) => {
+              const v = singleViewer.current;
+              if (!v.drag) return;
+              v.x = v.sx + (e.clientX - v.mx); v.y = v.sy + (e.clientY - v.my);
+              if (singleImgRef.current) singleImgRef.current.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.z})`;
+            }}>
+            <img ref={singleImgRef} src={result} alt="放大结果" draggable={false}
+              style={{ transform: 'scale(1)', transformOrigin: '0 0', maxWidth: '90vw', maxHeight: '85vh' }}
+              className="" />
+          </div>
+
+          <div className="text-center py-2 text-white/25 text-[11px] shrink-0 bg-black/40">
+            滚轮缩放 · 拖拽平移 · 点击空白关闭
+          </div>
+        </div>
+      )}
+
+      {/* 全屏查看 - 对比模式 (简化: 和页面模式一致, 可滚动+滑块缩放+联动滚动) */}
+      {showModal && modalMode === 'compare' && result && origDims && (
+        <div className="fixed inset-0 z-50 bg-black/95 flex flex-col" onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}>
+          {/* 顶部导航 */}
+          <div className="flex items-center justify-between px-5 py-3 bg-black/60 backdrop-blur-sm border-b border-white/10 shrink-0">
+            <h3 className="text-sm text-white/80 font-semibold flex items-center gap-2">
+              <ImageIcon className="w-4 h-4 text-indigo-400" />
+              前后细节对比
+            </h3>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-[10px] text-white/50 cursor-pointer select-none hover:text-white/70 transition-colors">
+                <input type="checkbox" checked={syncedScroll}
+                  onChange={(e) => setSyncedScroll(e.target.checked)}
+                  className="w-2.5 h-2.5 rounded border-white/30 bg-white/10 text-indigo-400" />
+                联动滚动
+              </label>
+              <span className="text-[11px] text-white/40">同步缩放</span>
+              <input type="range" min="1" max="8" step="0.5" value={compareZoom}
+                onChange={(e) => setCompareZoom(parseFloat(e.target.value))}
+                className="w-20 h-1" />
+              <span className="text-xs font-mono text-indigo-400 w-8 text-right tabular-nums">{compareZoom}x</span>
+              <button onClick={(e) => { e.stopPropagation(); setShowModal(false); }}
+                className="w-7 h-7 ml-1 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/70 hover:text-white transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* 双栏图片区 - 可滚动 + 联动滚动 */}
+          <div className="flex-1 flex flex-col sm:flex-row gap-0 min-h-0">
             {/* 原图 */}
-            <div className="bg-black/40 rounded-xl p-3 flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-2">
+            <div className="flex-1 flex flex-col min-w-0 border-r-0 sm:border-r border-white/10">
+              <div className="px-4 py-2 flex items-center gap-2 shrink-0">
                 <span className="text-[10px] font-semibold text-white/60 bg-white/10 px-2 py-0.5 rounded">原图</span>
                 <span className="text-[10px] text-white/40">{origDims.w}&times;{origDims.h}px</span>
               </div>
-              <img src={preview} alt="原图" className="max-w-full max-h-[70vh] object-contain rounded-lg" />
+              <div ref={fsLeftScrollRef}
+                onScroll={() => {
+                  if (fsSyncingRef.current || !syncedScroll) return;
+                  fsSyncingRef.current = true;
+                  const s = fsLeftScrollRef.current, t = fsRightScrollRef.current;
+                  if (s && t) {
+                    const pctX = s.scrollWidth > s.clientWidth ? s.scrollLeft / (s.scrollWidth - s.clientWidth) : 0;
+                    const pctY = s.scrollHeight > s.clientHeight ? s.scrollTop / (s.scrollHeight - s.clientHeight) : 0;
+                    if (t.scrollWidth > t.clientWidth) t.scrollLeft = pctX * (t.scrollWidth - t.clientWidth);
+                    if (t.scrollHeight > t.clientHeight) t.scrollTop = pctY * (t.scrollHeight - t.clientHeight);
+                  }
+                  requestAnimationFrame(() => { fsSyncingRef.current = false; });
+                }}
+                className="flex-1 overflow-auto bg-black/20">
+                <img src={preview} alt="原图"
+                  style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left' }}
+                  className="block" />
+              </div>
             </div>
             {/* 放大后 */}
-            <div className="bg-black/40 rounded-xl p-3 flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-2">
+            <div className="flex-1 flex flex-col min-w-0">
+              <div className="px-4 py-2 flex items-center gap-2 shrink-0">
                 <span className="text-[10px] font-semibold text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded">放大后</span>
                 <span className="text-[10px] text-white/40">{resultDims.w}&times;{resultDims.h}px</span>
               </div>
-              <img src={result} alt="放大后" className="max-w-full max-h-[70vh] object-contain rounded-lg" />
+              <div ref={fsRightScrollRef}
+                onScroll={() => {
+                  if (fsSyncingRef.current || !syncedScroll) return;
+                  fsSyncingRef.current = true;
+                  const s = fsRightScrollRef.current, t = fsLeftScrollRef.current;
+                  if (s && t) {
+                    const pctX = s.scrollWidth > s.clientWidth ? s.scrollLeft / (s.scrollWidth - s.clientWidth) : 0;
+                    const pctY = s.scrollHeight > s.clientHeight ? s.scrollTop / (s.scrollHeight - s.clientHeight) : 0;
+                    if (t.scrollWidth > t.clientWidth) t.scrollLeft = pctX * (t.scrollWidth - t.clientWidth);
+                    if (t.scrollHeight > t.clientHeight) t.scrollTop = pctY * (t.scrollHeight - t.clientHeight);
+                  }
+                  requestAnimationFrame(() => { fsSyncingRef.current = false; });
+                }}
+                className="flex-1 overflow-auto bg-black/20">
+                <img src={result} alt="放大后"
+                  style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left' }}
+                  className="block" />
+              </div>
             </div>
           </div>
-          <div className="absolute top-4 right-4">
-            <button onClick={() => setShowModal(false)}
-              className="w-8 h-8 bg-white/20 hover:bg-white/30 backdrop-blur-sm rounded-lg flex items-center justify-center text-white transition-colors">
-              <X className="w-4 h-4" />
-            </button>
+
+          <div className="text-center py-2 text-white/25 text-[11px] shrink-0 bg-black/40">
+            滚动查看细节 · 滑块缩放 · 联动滚动可开关 · 点击空白关闭
           </div>
-          <div className="absolute bottom-4 text-white/30 text-xs">点击空白区域关闭</div>
         </div>
       )}
     </div>
