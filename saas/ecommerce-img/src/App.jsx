@@ -38,6 +38,7 @@ function App() {
   const [imgPan, setImgPan] = useState({ x: 0, y: 0 })
   const [isPanning, setIsPanning] = useState(false)
   const [showDonateTooltip, setShowDonateTooltip] = useState(false);
+  const [showRewardModal, setShowRewardModal] = useState(false);
   const panStart = useRef({ x: 0, y: 0 })
   const panOrigin = useRef({ x: 0, y: 0 })
   const fileRef = useRef(null)
@@ -672,7 +673,7 @@ function App() {
           </div>
         )}
         <button
-          onClick={() => window.open("https://afdian.com/a/upscale", "_blank")}
+          onClick={() => setShowRewardModal(true)}
           onMouseEnter={() => setShowDonateTooltip(true)}
           onMouseLeave={() => setShowDonateTooltip(false)}
           className="group w-14 h-14 bg-gradient-to-br from-pink-300 to-purple-400 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer"
@@ -683,10 +684,38 @@ function App() {
             <circle cx="5" cy="14" r="3" />
             <circle cx="19" cy="14" r="3" />
             <path d="M12 14c-2.5 0-4.5 1.5-4.5 3.5s2 3.5 4.5 3.5 4.5-1.5 4.5-3.5-2-3.5-4.5-3.5z" />
-          </svg>
+              </svg>
+          
         </button>
       </div>
 
+
+      {/* 微信赞赏码弹窗 */}
+      {showRewardModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
+          onClick={() => setShowRewardModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl p-6 shadow-2xl max-w-[300px] w-full mx-4 relative animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowRewardModal(false)}
+              className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full shadow-md border border-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              
+                <X className="w-4 h-4" />
+              
+            </button>
+            <div className="text-center">
+              <p className="text-sm font-semibold text-gray-700 mb-3">扫一扫，请猫猫吃罐罐 🐱</p>
+              <img src="/wechat-reward.png" alt="微信赞赏码" className="w-48 h-48 mx-auto rounded-lg" />
+              <p className="text-xs text-gray-400 mt-3">感谢您的支持 ❤️</p>
+            </div>
+          </div>
+        </div>
+      )}
       {/* 全屏查看 - 单图模式 (可缩放拖动 - 使用 ref 防崩溃) */}
       {showModal && modalMode === 'single' && result && (
         <div className="fixed inset-0 z-50 bg-black/95 flex flex-col select-none"
