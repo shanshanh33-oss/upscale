@@ -37,6 +37,7 @@ function App() {
   const [imgZoom, setImgZoom] = useState(1)
   const [imgPan, setImgPan] = useState({ x: 0, y: 0 })
   const [isPanning, setIsPanning] = useState(false)
+  const [showDonateTooltip, setShowDonateTooltip] = useState(false);
   const panStart = useRef({ x: 0, y: 0 })
   const panOrigin = useRef({ x: 0, y: 0 })
   const fileRef = useRef(null)
@@ -661,6 +662,30 @@ function App() {
       </main>
 
       <footer className="text-center py-6 text-xs text-gray-400 border-t border-gray-100 mt-8">UpScale·图片放大工具 &middot; 基于 Sharp 引擎</footer>
+
+      {/* 猫爪打赏按钮 */}
+      <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end">
+        {showDonateTooltip && (
+          <div className="mb-2.5 px-4 py-2 bg-white rounded-xl shadow-lg border border-gray-100 text-sm text-gray-700 whitespace-nowrap relative animate-fade-in">
+            请作者的猫猫吃罐罐 🐱
+            <div className="absolute -bottom-1 right-6 w-3 h-3 bg-white border-r border-b border-gray-100 transform rotate-45" />
+          </div>
+        )}
+        <button
+          onClick={() => window.open("https://afdian.com/a/your-afdian-link", "_blank")}
+          onMouseEnter={() => setShowDonateTooltip(true)}
+          onMouseLeave={() => setShowDonateTooltip(false)}
+          className="group w-14 h-14 bg-gradient-to-br from-pink-300 to-purple-400 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer"
+        >
+          <svg viewBox="0 0 24 24" className="w-7 h-7 text-white fill-current">
+            <circle cx="8" cy="9" r="3.5" />
+            <circle cx="16" cy="9" r="3.5" />
+            <circle cx="5" cy="14" r="3" />
+            <circle cx="19" cy="14" r="3" />
+            <path d="M12 14c-2.5 0-4.5 1.5-4.5 3.5s2 3.5 4.5 3.5 4.5-1.5 4.5-3.5-2-3.5-4.5-3.5z" />
+          </svg>
+        </button>
+      </div>
 
       {/* 全屏查看 - 单图模式 (可缩放拖动 - 使用 ref 防崩溃) */}
       {showModal && modalMode === 'single' && result && (
