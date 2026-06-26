@@ -14,7 +14,7 @@ export async function loadModel() {
   try {
     var res = await fetch(MODEL_PATH);
     if (res.ok) {
-      var ort = await import('onnxruntime-web');
+      var ort = await import('onnxruntime-web/wasm');
       var buf = await res.arrayBuffer();
       session = await ort.InferenceSession.create(buf);
       useLocalModel = true; return true;
@@ -41,7 +41,7 @@ async function runLocal(imageData) {
       for (var c = 0; c < 3; c++)
         inputData[c * height * width + y * width + x] = data[si + c] / 255;
     }
-  var ort = await import('onnxruntime-web');
+  var ort = await import('onnxruntime-web/wasm');
   var t = new ort.Tensor('float32', inputData, [1, 3, height, width]);
   var r = await session.run({ Input1: t });
   var o = r.output; var oh = o.dims[2], ow = o.dims[3];
