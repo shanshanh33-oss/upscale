@@ -29,6 +29,26 @@ const revokeBatchResultUrls = (items) => {
   items.forEach(item => revokeObjectUrl(item.result))
 }
 
+const trackEvent = (event, data = {}) => {
+  if (typeof window === 'undefined') return
+  const payload = JSON.stringify({ event, data })
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: 'application/json' })
+      navigator.sendBeacon('/api/track', blob)
+      return
+    }
+    fetch('/api/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {})
+  } catch {
+    // Analytics should never interrupt image processing.
+  }
+}
+
  function App() {
   // --- 单图模式状态 ---
   const [file, setFile] = useState(null)
@@ -171,6 +191,14 @@ const batchItemsRef = useRef([])
     return () => revokeBatchResultUrls(batchItemsRef.current)
   }, [])
 
+  useEffect(() => {
+    trackEvent('page_view', { path: window.location.pathname })
+    if (!sessionStorage.getItem('tuscale_session_tracked')) {
+      sessionStorage.setItem('tuscale_session_tracked', '1')
+      trackEvent('session_start', { path: window.location.pathname })
+    }
+  }, [])
+
  // --- 键盘快捷键 ---
  useEffect(() => {
    const handler = (e) => {
@@ -243,6 +271,7 @@ const batchItemsRef = useRef([])
   // --- 单图文件处理 ---
   const handleFile = useCallback((f) => {
     if (!f) return
+      trackEvent('image_uploaded', { mode: 'single', count: 1 })
       setFile(f)
       setResult(null)
       setResultDims(null)
@@ -292,6 +321,7 @@ const batchItemsRef = useRef([])
       if (IMAGE_EXTS.includes(ext) && (!f.type || f.type.startsWith('image/'))) validFiles.push(f)
    }
     if (validFiles.length === 0) return
+    trackEvent('image_uploaded', { mode: 'batch', count: validFiles.length })
 
     setBatchItems(prev => {
       const remaining = MAX_BATCH - prev.length
@@ -1038,6 +1068,13 @@ const batchItemsRef = useRef([])
         return
       }
       setProcessing(true)
+      trackEvent('process_start', {
+        mode: 'single',
+        ai: aiUpscale,
+        format,
+        scaleMode,
+        outputPixels: expectedOutput ? expectedOutput.w * expectedOutput.h : 0,
+      })
       setProgress(0)
       setProcessStage('准备处理')
       setError(null)
@@ -1067,13 +1104,21 @@ const batchItemsRef = useRef([])
       const sizeKB = res.size < 1024 * 1024
         ? (res.size / 1024).toFixed(1) + ' KB'
         : (res.size / (1024 * 1024)).toFixed(1) + ' MB'
-      setResultSize(sizeKB)
+        setResultSize(sizeKB)
         setProgress(100)
         setProcessStage('完成')
+        trackEvent('process_success', {
+          mode: 'single',
+          ai: aiUpscale,
+          format,
+          width: res.width,
+          height: res.height,
+        })
       } catch (err) {
         setError(getProcessErrorMessage(err))
         setProgress(0)
         setProcessStage('')
+        trackEvent('process_error', { mode: 'single', ai: aiUpscale })
     } finally {
       clearInterval(timer)
       setProcessing(false)
@@ -1086,6 +1131,7 @@ const batchItemsRef = useRef([])
     if (pending.length === 0) return
 
     setBatchProcessing(true)
+    trackEvent('batch_start', { count: pending.length, ai: aiUpscale, format })
       setBatchItems(prev => prev.map(it => it.status === 'pending' && it.preview && it.origDims
         ? { ...it, status: 'pending', progress: 0, result: null, resultBlob: null, resultDims: null, resultSize: null, error: null, stage: '' }
         : it
@@ -1139,9 +1185,16 @@ const batchItemsRef = useRef([])
             resultSize: sizeKB,
             stage: '完成'
           } : it))
+          trackEvent('batch_item_success', {
+            ai: aiUpscale,
+            format,
+            width: res.width,
+            height: res.height,
+          })
         } catch (err) {
           clearInterval(timer)
           setBatchItems(prev => prev.map(it => it.id === item.id ? { ...it, status: 'error', progress: 0, error: getProcessErrorMessage(err), stage: '' } : it))
+          trackEvent('batch_item_error', { ai: aiUpscale })
         }
     }
 
@@ -1152,6 +1205,7 @@ const batchItemsRef = useRef([])
   // --- 单图下载 ---
   const handleDownload = () => {
     if (!result) return
+    trackEvent('download', { mode: 'single', format })
     const a = document.createElement('a')
     const ext = format === "jpeg" ? "jpg" : format === "webp" ? "webp" : "png"
     const name = file ? file.name.replace(/\.[^.]+$/, '') : 'image'
@@ -1176,6 +1230,7 @@ const batchItemsRef = useRef([])
   // --- 单图下载（批量用）---
   const downloadSingleResult = (item, index) => {
     if (!item.result) return
+    trackEvent('download', { mode: 'batch_single', format })
     const a = document.createElement('a')
     const ext = format === "jpeg" ? "jpg" : format === "webp" ? "webp" : "png"
     a.download = renderFileName(item, index || 0) + '.' + ext
@@ -1188,6 +1243,7 @@ const batchItemsRef = useRef([])
     try {
     const doneItems = batchItems.filter(it => it.status === 'done' && it.result)
     if (doneItems.length === 0) { alert('没有可下载的图片'); return }
+    trackEvent('download_zip', { count: doneItems.length, format })
 
     const zip = new JSZip()
     const ext = format === "jpeg" ? "jpg" : format === "webp" ? "webp" : "png"
@@ -1579,7 +1635,11 @@ const batchItemsRef = useRef([])
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5">
                   <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
                     <input type="checkbox" checked={aiUpscale}
-                      onChange={(e) => setAiUpscale(e.target.checked)}
+                      onChange={(e) => {
+                        const enabled = e.target.checked
+                        setAiUpscale(enabled)
+                        if (enabled) trackEvent('ai_enabled')
+                      }}
                       className="w-3 h-3 rounded border-gray-300 text-indigo-500" />
                     AI{'\u653e\u5927'}
                     <span className="text-[9px] text-gray-300 ml-0.5">(beta)</span>
