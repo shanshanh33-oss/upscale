@@ -1,13 +1,33 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
-import { Upload, Download, ZoomIn, Maximize2, Loader2, Sparkles, X, Image as ImageIcon, FolderOpen, CheckCircle, AlertCircle, FileDown } from 'lucide-react'
+import { Upload, Download, ZoomIn, Maximize2, Loader2, Sparkles, X, Image as ImageIcon, FolderOpen, CheckCircle, AlertCircle, FileDown, FileImage, Crop, MessageSquare } from 'lucide-react'
 import JSZip from 'jszip'
 import { loadModel, processWithAI, isModelLoaded } from './ai/waifu2x'
+import FormatConverter from './tools/FormatConverter'
+import ContactPage from './tools/ContactPage'
+import RewardButton from './tools/RewardButton'
 
-const TARGET_PRESETS = [
-  { w: 1920, h: 1080, label: 'Full HD', ratio: '16:9' },
-  { w: 2560, h: 1440, label: '2K', ratio: '16:9' },
-  { w: 3840, h: 2160, label: '4K', ratio: '16:9' },
-  { w: 7680, h: 4320, label: '8K', ratio: '16:9' },
+const QUALITY_PRESETS = [
+  { edge: 1080, label: '1080级', desc: '最长边 1080px' },
+  { edge: 2560, label: '2K级', desc: '最长边 2560px' },
+  { edge: 3840, label: '4K级', desc: '最长边 3840px' },
+  { edge: 7680, label: '8K级', desc: '最长边 7680px' },
+]
+
+const TOOL_NAV = [
+  { id: 'upscale', label: '图片放大', path: '/' },
+  { id: 'converter', label: '格式转换', path: '/format-converter' },
+  { id: 'contact', label: '反馈联系', path: '/contact' },
+]
+
+const CROP_PRESETS = [
+  { id: 'free', label: '自由', ratio: null, w: null, h: null },
+  { id: '1-1', label: '1:1 方图', ratio: 1, w: 1080, h: 1080 },
+  { id: '4-5', label: '4:5 竖图', ratio: 4 / 5, w: 1080, h: 1350 },
+  { id: '3-4', label: '3:4 封面', ratio: 3 / 4, w: 1080, h: 1440 },
+  { id: '16-9', label: '16:9 横图', ratio: 16 / 9, w: 1920, h: 1080 },
+  { id: '9-16', label: '9:16 竖屏', ratio: 9 / 16, w: 1080, h: 1920 },
+  { id: '2-3', label: '2:3 海报', ratio: 2 / 3, w: 1200, h: 1800 },
+  { id: 'wechat', label: '公众号头图', ratio: 900 / 383, w: 900, h: 383 },
 ]
 
  let batchIdCounter = 0
@@ -27,6 +47,91 @@ const formatMegapixels = (pixels) => `${(pixels / 1_000_000).toFixed(pixels >= 1
 
 const revokeBatchResultUrls = (items) => {
   items.forEach(item => revokeObjectUrl(item.result))
+}
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+const getPresetRatio = (presetId) => CROP_PRESETS.find(item => item.id === presetId)?.ratio || null
+
+const formatRatio = (ratio) => {
+  if (!ratio) return '自由比例'
+  const candidates = [
+    [1, 1], [4, 5], [3, 4], [16, 9], [9, 16], [2, 3], [900, 383],
+  ]
+  const match = candidates.find(([w, h]) => Math.abs((w / h) - ratio) < 0.01)
+  if (match) return `${match[0]}:${match[1]}`
+  return `${ratio.toFixed(2)}:1`
+}
+
+const getNormalizedCropRatio = (outputRatio, imageWidth, imageHeight) => {
+  if (!outputRatio || !imageWidth || !imageHeight) return null
+  return outputRatio / (imageWidth / imageHeight)
+}
+
+const fitEdgeToRatio = (edge, ratio = 1) => {
+  if (!edge || !ratio) return { w: edge || 0, h: edge || 0 }
+  if (ratio >= 1) return { w: edge, h: Math.round(edge / ratio) }
+  return { w: Math.round(edge * ratio), h: edge }
+}
+
+const getDefaultCropRect = (width, height, presetId = 'free') => {
+  const ratio = getPresetRatio(presetId)
+  if (!ratio || !width || !height) return { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }
+  const imageRatio = width / height
+  if (imageRatio > ratio) {
+    const cropW = clamp((height * ratio) / width, 0.1, 1)
+    return { x: (1 - cropW) / 2, y: 0, w: cropW, h: 1 }
+  }
+  const cropH = clamp(width / ratio / height, 0.1, 1)
+  return { x: 0, y: (1 - cropH) / 2, w: 1, h: cropH }
+}
+
+const normalizeCropRect = (rect, ratio = null) => {
+  let next = {
+    x: clamp(rect.x, 0, 0.98),
+    y: clamp(rect.y, 0, 0.98),
+    w: clamp(rect.w, 0.02, 1),
+    h: clamp(rect.h, 0.02, 1),
+  }
+  if (ratio) {
+    const currentRatio = next.w / next.h
+    if (currentRatio > ratio) next.w = next.h * ratio
+    else next.h = next.w / ratio
+  }
+  if (next.x + next.w > 1) next.x = 1 - next.w
+  if (next.y + next.h > 1) next.y = 1 - next.h
+  return next
+}
+
+const getSourceDims = (dims, cropEnabled, rect) => {
+  if (!cropEnabled || !dims) return dims
+  return {
+    w: Math.max(1, Math.round(dims.w * rect.w)),
+    h: Math.max(1, Math.round(dims.h * rect.h)),
+  }
+}
+
+const resizeCropRect = (rect, dx, dy, ratio = null) => {
+  if (!ratio) {
+    return normalizeCropRect({
+      ...rect,
+      w: rect.w + dx,
+      h: rect.h + dy,
+    })
+  }
+
+  const maxW = 1 - rect.x
+  const maxH = 1 - rect.y
+  const maxWByRatio = Math.min(maxW, maxH * ratio)
+  const proposedW = Math.abs(dx) >= Math.abs(dy) ? rect.w + dx : (rect.h + dy) * ratio
+  const nextW = clamp(proposedW, 0.02, maxWByRatio)
+
+  return {
+    x: rect.x,
+    y: rect.y,
+    w: nextW,
+    h: nextW / ratio,
+  }
 }
 
 const ANALYTICS_VISITOR_KEY = 'tuscale_visitor_id'
@@ -78,7 +183,48 @@ const trackEvent = (event, data = {}) => {
   }
 }
 
+const PAGE_META = {
+  '/': {
+    title: 'TU Scale·图片放大 - 免费在线高清图像放大与裁切工具（支持4K/8K）',
+    description: 'TU Scale 免费在线图片放大工具，无需登录即可使用。支持单图/批量放大、拖拽裁切、常用比例预设、智能锐化、4K/8K 分辨率输出，浏览器端处理，不上传服务器。',
+  },
+  '/format-converter': {
+    title: '本地图片格式转换 - JPG/PNG/WebP/AVIF 批量转换 | TU Scale',
+    description: 'TU Scale 本地图片格式转换工具，支持 JPG、PNG、WebP、AVIF 等格式批量转换、质量调节和 ZIP 下载，图片在浏览器本地处理。',
+  },
+  '/contact': {
+    title: '反馈与联系 - TU Scale 本地图片工具箱',
+    description: '向 TU Scale 提交功能建议、问题反馈、格式支持请求、批量电商图片处理需求或商务合作意向。',
+  },
+}
+
  function App() {
+  const [route, setRoute] = useState(() => window.location.pathname)
+
+  const navigate = useCallback((path) => {
+    window.history.pushState({}, '', path)
+    setRoute(path)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => setRoute(window.location.pathname)
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  useEffect(() => {
+    const meta = PAGE_META[route] || PAGE_META['/']
+    document.title = meta.title
+    let description = document.querySelector('meta[name="description"]')
+    if (!description) {
+      description = document.createElement('meta')
+      description.setAttribute('name', 'description')
+      document.head.appendChild(description)
+    }
+    description.setAttribute('content', meta.description)
+  }, [route])
+
   // --- 单图模式状态 ---
   const [file, setFile] = useState(null)
   const [preview, setPreview] = useState(null)
@@ -106,14 +252,20 @@ const trackEvent = (event, data = {}) => {
   const [antiAlias, setAntiAlias] = useState(false)
   const [aiModelLoading, setAiModelLoading] = useState(false)
   const [aiModelReady, setAiModelReady] = useState(false)
+  const [cropEnabled, setCropEnabled] = useState(false)
+  const [cropPreset, setCropPreset] = useState('free')
+  const [cropRect, setCropRect] = useState({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 })
+  const [cropDrag, setCropDrag] = useState(null)
 
   // --- 单图处理状态 ---
   const [processing, setProcessing] = useState(false)
     const [progress, setProgress] = useState(0)
     const [processStage, setProcessStage] = useState('')
-    const [result, setResult] = useState(null)
+  const [result, setResult] = useState(null)
     const [resultDims, setResultDims] = useState(null)
   const [resultSize, setResultSize] = useState(null)
+  const [compareSource, setCompareSource] = useState(null)
+  const [compareSourceDims, setCompareSourceDims] = useState(null)
   const [error, setError] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const [showModal, setShowModal] = useState(false)
@@ -122,9 +274,6 @@ const trackEvent = (event, data = {}) => {
   const [imgZoom, setImgZoom] = useState(1)
   const [imgPan, setImgPan] = useState({ x: 0, y: 0 })
   const [isPanning, setIsPanning] = useState(false)
-  const [showDonateTooltip, setShowDonateTooltip] = useState(false)
-  const [showRewardModal, setShowRewardModal] = useState(false)
-
     // --- 预加载 AI 模型 ---
     useEffect(() => {
       if (!aiUpscale) {
@@ -180,6 +329,7 @@ const trackEvent = (event, data = {}) => {
   const panOrigin = useRef({ x: 0, y: 0 })
   const fileRef = useRef(null)
   const folderRef = useRef(null)
+  const cropStageRef = useRef(null)
 
   // 用 DOM 方式设置 webkitdirectory，确保浏览器识别为文件夹选择器
   useEffect(() => {
@@ -211,6 +361,10 @@ const batchItemsRef = useRef([])
   useEffect(() => {
     return () => revokeObjectUrl(result)
   }, [result])
+
+  useEffect(() => {
+    return () => revokeObjectUrl(compareSource)
+  }, [compareSource])
 
   useEffect(() => {
     batchItemsRef.current = batchItems
@@ -290,12 +444,17 @@ const batchItemsRef = useRef([])
   }, [scale, format, smartSharpen, sharpenAmount, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias, scaleMode, targetMode, targetIdx, keepRatio, customW, customH, fileNameTemplate])
 
   // --- 单图模式 effect ---
-    useEffect(() => {
-      setResult(null)
-      setResultDims(null)
-      setResultSize(null)
-      setProcessStage('')
-    }, [scaleMode, scale, targetMode, targetIdx, customW, customH, format, keepRatio, smartSharpen, sharpenAmount, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias])
+  useEffect(() => {
+    setResult(null)
+    setResultDims(null)
+    setResultSize(null)
+    setCompareSource(prev => {
+      revokeObjectUrl(prev)
+      return null
+    })
+    setCompareSourceDims(null)
+    setProcessStage('')
+  }, [scaleMode, scale, targetMode, targetIdx, customW, customH, format, keepRatio, smartSharpen, sharpenAmount, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias, cropEnabled, cropRect])
 
   // --- 单图文件处理 ---
   const handleFile = useCallback((f) => {
@@ -305,7 +464,10 @@ const batchItemsRef = useRef([])
       setResult(null)
       setResultDims(null)
       setResultSize(null)
-    setError(null)
+      revokeObjectUrl(compareSource)
+      setCompareSource(null)
+      setCompareSourceDims(null)
+      setError(null)
     const reader = new FileReader()
     reader.onload = (e) => {
       const img = new Image()
@@ -313,12 +475,13 @@ const batchItemsRef = useRef([])
         setOrigDims({ w: img.width, h: img.height })
         setCustomW(img.width)
         setCustomH(img.height)
+        setCropRect(getDefaultCropRect(img.width, img.height, cropPreset))
         setPreview(e.target.result)
       }
       img.src = e.target.result
     }
     reader.readAsDataURL(f)
-  }, [])
+  }, [cropPreset, compareSource])
 
   // --- 单图拖拽 ---
   const handleDrop = useCallback((e) => {
@@ -335,7 +498,7 @@ const batchItemsRef = useRef([])
     const handleRemove = useCallback((e) => {
       e.stopPropagation()
       setFile(null); setPreview(null); setOrigDims(null)
-      setResult(null); setResultDims(null); setResultSize(null); setProcessStage('')
+      setResult(null); setResultDims(null); setResultSize(null); setCompareSource(null); setCompareSourceDims(null); setProcessStage('')
     }, [])
 
   // --- 批量文件处理（含上限检查）---
@@ -398,12 +561,86 @@ const batchItemsRef = useRef([])
       })
     }, [])
 
-    const clearAllBatch = useCallback(() => {
-      setBatchItems(prev => {
-        revokeBatchResultUrls(prev)
-        return []
-      })
-    }, [])
+  const clearAllBatch = useCallback(() => {
+    setBatchItems(prev => {
+      revokeBatchResultUrls(prev)
+      return []
+    })
+  }, [])
+
+  const resetResultState = useCallback(() => {
+    setResult(null)
+    setResultDims(null)
+    setResultSize(null)
+    revokeObjectUrl(compareSource)
+    setCompareSource(null)
+    setCompareSourceDims(null)
+    setProcessStage('')
+    setError(null)
+  }, [compareSource])
+
+  const applyCropPreset = useCallback((presetId) => {
+    const preset = CROP_PRESETS.find(item => item.id === presetId) || CROP_PRESETS[0]
+    resetResultState()
+    setCropPreset(preset.id)
+    setCropEnabled(true)
+    if (origDims) setCropRect(getDefaultCropRect(origDims.w, origDims.h, preset.id))
+    if (preset.w && preset.h) {
+      setScaleMode('target')
+      setTargetMode('custom')
+      setCustomW(preset.w)
+      setCustomH(preset.h)
+      setKeepRatio(false)
+      setFormat(preset.id === 'wechat' ? 'jpeg' : format)
+    }
+    trackEvent('crop_preset_selected', { id: preset.id })
+  }, [format, origDims, resetResultState])
+
+  const setToolMode = useCallback((nextBatchMode) => {
+    if (nextBatchMode === batchMode) return
+    setBatchMode(nextBatchMode)
+    clearAllBatch()
+    setFile(null)
+    setPreview(null)
+    setOrigDims(null)
+    setResult(null)
+    setResultDims(null)
+    setResultSize(null)
+    revokeObjectUrl(compareSource)
+    setCompareSource(null)
+    setCompareSourceDims(null)
+    setProcessStage('')
+    setError(null)
+  }, [batchMode, clearAllBatch, compareSource])
+
+  const updateCropFromPointer = useCallback((event) => {
+    if (!cropDrag || !cropStageRef.current) return
+    const bounds = cropStageRef.current.getBoundingClientRect()
+    const dx = (event.clientX - cropDrag.startX) / bounds.width
+    const dy = (event.clientY - cropDrag.startY) / bounds.height
+    const ratio = getNormalizedCropRatio(getPresetRatio(cropPreset), origDims?.w, origDims?.h)
+    if (cropDrag.type === 'move') {
+      setCropRect(normalizeCropRect({
+        ...cropDrag.startRect,
+        x: cropDrag.startRect.x + dx,
+        y: cropDrag.startRect.y + dy,
+      }, ratio))
+      return
+    }
+    setCropRect(resizeCropRect(cropDrag.startRect, dx, dy, ratio))
+  }, [cropDrag, cropPreset, origDims])
+
+  useEffect(() => {
+    if (!cropDrag) return undefined
+    const handleMove = (event) => updateCropFromPointer(event)
+    const handleUp = () => setCropDrag(null)
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+    return () => {
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', handleUp)
+    }
+  }, [cropDrag, updateCropFromPointer])
 
 
   const handleFolderSelect = useCallback(async () => {
@@ -540,23 +777,55 @@ const batchItemsRef = useRef([])
   }, [])
 
   // --- 目标尺寸计算 ---
+  const activeCropRatio = useMemo(() => (
+    cropEnabled ? getPresetRatio(cropPreset) : null
+  ), [cropEnabled, cropPreset])
+
+  const activeOutputRatio = useMemo(() => {
+    if (activeCropRatio) return activeCropRatio
+    const sourceDims = getSourceDims(origDims, cropEnabled, cropRect)
+    return sourceDims ? sourceDims.w / sourceDims.h : 16 / 9
+  }, [activeCropRatio, origDims, cropEnabled, cropRect])
+
   const targetDims = useMemo(() => {
     if (scaleMode === 'scale') return null
     if (targetMode === 'custom') return { w: parseInt(customW) || 0, h: parseInt(customH) || 0 }
-    return TARGET_PRESETS[targetIdx]
-  }, [scaleMode, targetMode, targetIdx, customW, customH])
+    const preset = QUALITY_PRESETS[targetIdx]
+    return fitEdgeToRatio(preset.edge, activeOutputRatio)
+  }, [scaleMode, targetMode, targetIdx, customW, customH, activeOutputRatio])
+
+  const previewTargetPreset = useCallback((preset) => (
+    fitEdgeToRatio(preset.edge, activeOutputRatio)
+  ), [activeOutputRatio])
+
+  const handleCustomWidthChange = useCallback((value) => {
+    setCustomW(value)
+    const width = parseInt(value)
+    if (activeOutputRatio && !Number.isNaN(width) && width > 0) {
+      setCustomH(String(Math.max(1, Math.round(width / activeOutputRatio))))
+    }
+  }, [activeOutputRatio])
+
+  const handleCustomHeightChange = useCallback((value) => {
+    setCustomH(value)
+    const height = parseInt(value)
+    if (activeOutputRatio && !Number.isNaN(height) && height > 0) {
+      setCustomW(String(Math.max(1, Math.round(height * activeOutputRatio))))
+    }
+  }, [activeOutputRatio])
 
   const expectedOutput = useMemo(() => {
     if (!origDims) return null
+    const sourceDims = getSourceDims(origDims, cropEnabled, cropRect)
     let w, h
     if (scaleMode === 'scale') {
-      w = Math.round(origDims.w * scale)
-      h = Math.round(origDims.h * scale)
+      w = Math.round(sourceDims.w * scale)
+      h = Math.round(sourceDims.h * scale)
     } else if (targetDims) {
-      if (keepRatio) {
-        const r = Math.min(targetDims.w / origDims.w, targetDims.h / origDims.h)
-        w = Math.round(origDims.w * r)
-        h = Math.round(origDims.h * r)
+      if (keepRatio && !cropEnabled) {
+        const r = Math.min(targetDims.w / sourceDims.w, targetDims.h / sourceDims.h)
+        w = Math.round(sourceDims.w * r)
+        h = Math.round(sourceDims.h * r)
       } else {
         w = targetDims.w; h = targetDims.h
       }
@@ -566,20 +835,17 @@ const batchItemsRef = useRef([])
       w = Math.round(w * r); h = Math.round(h * r)
     }
     if (format === 'jpeg') { w += w & 1; h += h & 1 }
-    const capped = !!(origDims && (Math.round(origDims.w * scale) > 10000 || Math.round(origDims.h * scale) > 10000))
-    const effectiveScale = origDims ? Math.max(w / origDims.w, h / origDims.h) : scale
+    const capped = !!(sourceDims && (Math.round(sourceDims.w * scale) > 10000 || Math.round(sourceDims.h * scale) > 10000))
+    const effectiveScale = sourceDims ? Math.max(w / sourceDims.w, h / sourceDims.h) : scale
     return { w, h, capped, effectiveScale }
-  }, [origDims, scaleMode, scale, targetDims, keepRatio, format])
+  }, [origDims, scaleMode, scale, targetDims, keepRatio, format, cropEnabled, cropRect])
 
-    const maxScale = origDims
-      ? Math.min(20, Math.floor(Math.min(10000 / origDims.w, 10000 / origDims.h) * 2) / 2)
-      : 20
-
-    const processEstimate = useMemo(() => {
+  const processEstimate = useMemo(() => {
       if (!origDims || !expectedOutput) return null
       const outputPixels = expectedOutput.w * expectedOutput.h
-      const inputPixels = origDims.w * origDims.h
-      const inputEdge = Math.max(origDims.w, origDims.h)
+      const estimateSourceDims = getSourceDims(origDims, cropEnabled, cropRect)
+      const inputPixels = estimateSourceDims.w * estimateSourceDims.h
+      const inputEdge = Math.max(estimateSourceDims.w, estimateSourceDims.h)
       const warnings = []
       let blockReason = ''
 
@@ -594,44 +860,110 @@ const batchItemsRef = useRef([])
       }
 
       return { outputPixels, inputPixels, inputEdge, warnings, blockReason }
-    }, [origDims, expectedOutput, aiUpscale])
+    }, [origDims, expectedOutput, aiUpscale, cropEnabled, cropRect])
 
-  // --- Canvas 放大处理（单图和批量共用）---
-  const processImageWithCanvas = (imageUrl, targetW, targetH, doEnhance, fmt) => {
+  const sourceDimsForPreview = useMemo(() => (
+    getSourceDims(origDims, cropEnabled, cropRect)
+  ), [origDims, cropEnabled, cropRect])
+
+  const maxScale = sourceDimsForPreview
+    ? Math.min(20, Math.floor(Math.min(10000 / sourceDimsForPreview.w, 10000 / sourceDimsForPreview.h) * 2) / 2)
+    : 20
+
+  const createCompareSourceImage = (imageUrl, cropOptions = null) => {
     return new Promise((resolve, reject) => {
       const img = new Image()
       img.onload = async () => {
         try {
-          const avgScale = Math.max(targetW / img.width, targetH / img.height)
+          let sourceX = 0
+          let sourceY = 0
+          let sourceW = img.width
+          let sourceH = img.height
+          if (cropOptions?.enabled) {
+            const rect = cropOptions.rect || getDefaultCropRect(img.width, img.height, cropOptions.presetId)
+            sourceX = Math.round(clamp(rect.x, 0, 1) * img.width)
+            sourceY = Math.round(clamp(rect.y, 0, 1) * img.height)
+            sourceW = Math.round(clamp(rect.w, 0.02, 1) * img.width)
+            sourceH = Math.round(clamp(rect.h, 0.02, 1) * img.height)
+            if (sourceX + sourceW > img.width) sourceW = img.width - sourceX
+            if (sourceY + sourceH > img.height) sourceH = img.height - sourceY
+          }
+          const canvas = document.createElement('canvas')
+          canvas.width = sourceW
+          canvas.height = sourceH
+          canvas.getContext('2d').drawImage(img, sourceX, sourceY, sourceW, sourceH, 0, 0, sourceW, sourceH)
+          const blob = await new Promise((resolveBlob) => canvas.toBlob(resolveBlob, 'image/png'))
+          if (!blob) throw new Error('EXPORT_FAILED')
+          resolve({ dataUrl: URL.createObjectURL(blob), width: sourceW, height: sourceH })
+        } catch (error) {
+          reject(error)
+        }
+      }
+      img.onerror = () => reject(new Error('Failed to load image'))
+      img.src = imageUrl
+    })
+  }
+
+  // --- Canvas 放大处理（单图和批量共用）---
+  const processImageWithCanvas = (imageUrl, targetW, targetH, doEnhance, fmt, cropOptions = null) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image()
+      img.onload = async () => {
+        try {
+          let sourceX = 0
+          let sourceY = 0
+          let sourceW = img.width
+          let sourceH = img.height
+
+          if (cropOptions?.enabled) {
+            const ratio = cropOptions.ratio
+            const rect = cropOptions.rect || getDefaultCropRect(img.width, img.height, cropOptions.presetId)
+            if (rect) {
+              sourceX = Math.round(clamp(rect.x, 0, 1) * img.width)
+              sourceY = Math.round(clamp(rect.y, 0, 1) * img.height)
+              sourceW = Math.round(clamp(rect.w, 0.02, 1) * img.width)
+              sourceH = Math.round(clamp(rect.h, 0.02, 1) * img.height)
+            } else if (ratio) {
+              const centerRect = getDefaultCropRect(img.width, img.height, cropOptions.presetId)
+              sourceX = Math.round(centerRect.x * img.width)
+              sourceY = Math.round(centerRect.y * img.height)
+              sourceW = Math.round(centerRect.w * img.width)
+              sourceH = Math.round(centerRect.h * img.height)
+            }
+            if (sourceX + sourceW > img.width) sourceW = img.width - sourceX
+            if (sourceY + sourceH > img.height) sourceH = img.height - sourceY
+          }
+
+          const avgScale = Math.max(targetW / sourceW, targetH / sourceH)
           const passes = avgScale >= 8 ? 3 : avgScale >= 4 ? 2 : avgScale >= 2.5 ? 2 : 1
 
           let srcCanvas = document.createElement('canvas')
-          srcCanvas.width = img.width
-          srcCanvas.height = img.height
+          srcCanvas.width = sourceW
+          srcCanvas.height = sourceH
           let srcCtx = srcCanvas.getContext('2d')
-          srcCtx.drawImage(img, 0, 0)
+          srcCtx.drawImage(img, sourceX, sourceY, sourceW, sourceH, 0, 0, sourceW, sourceH)
 
           // Apply pre-process enhancements to original image
           if (doEnhance.autoLevels || doEnhance.vibrance) {
-            const origData = srcCtx.getImageData(0, 0, img.width, img.height)
+            const origData = srcCtx.getImageData(0, 0, sourceW, sourceH)
             let processed = origData
             if (doEnhance.autoLevels) processed = autoLevelsFilter(processed)
             if (doEnhance.vibrance) processed = vibranceFilter(processed)
             // Create a temporary canvas to put processed data
             const tempCanvas = document.createElement('canvas')
-            tempCanvas.width = img.width
-            tempCanvas.height = img.height
+            tempCanvas.width = sourceW
+            tempCanvas.height = sourceH
             tempCanvas.getContext('2d').putImageData(processed, 0, 0)
             srcCtx.drawImage(tempCanvas, 0, 0)
           }
 
           // Pre-sharpen original image before upscaling
           if (doEnhance.smartSharpen && passes > 0) {
-            const preData = srcCtx.getImageData(0, 0, img.width, img.height)
+            const preData = srcCtx.getImageData(0, 0, sourceW, sourceH)
             const preSharp = unsharpMask(preData, sharpenAmount * 0.8)
             const tempPre = document.createElement('canvas')
-            tempPre.width = img.width
-            tempPre.height = img.height
+            tempPre.width = sourceW
+            tempPre.height = sourceH
             tempPre.getContext('2d').putImageData(preSharp, 0, 0)
             srcCtx.drawImage(tempPre, 0, 0)
           }
@@ -665,8 +997,8 @@ const batchItemsRef = useRef([])
           } else {
             for (let i = 0; i < passes; i++) {
             const progress = (i + 1) / passes
-            const stepW = Math.round(img.width * Math.pow(targetW / img.width, progress))
-            const stepH = Math.round(img.height * Math.pow(targetH / img.height, progress))
+            const stepW = Math.round(sourceW * Math.pow(targetW / sourceW, progress))
+            const stepH = Math.round(sourceH * Math.pow(targetH / sourceH, progress))
 
             const dstCanvas = document.createElement('canvas')
             dstCanvas.width = stepW
@@ -1089,6 +1421,21 @@ const batchItemsRef = useRef([])
     return { targetW, targetH }
   }
 
+  const getCropOptions = useCallback((forBatch = false, dims = origDims) => {
+    if (!cropEnabled || !dims) return null
+    const ratio = getPresetRatio(cropPreset)
+    const rect = forBatch ? getDefaultCropRect(dims.w, dims.h, cropPreset) : cropRect
+    return { enabled: true, presetId: cropPreset, ratio, rect }
+  }, [cropEnabled, cropPreset, cropRect, origDims])
+
+  const getSourceDimsForOutput = useCallback((dims, rect = cropRect) => {
+    if (!cropEnabled || !dims) return dims
+    return {
+      w: Math.max(1, Math.round(dims.w * rect.w)),
+      h: Math.max(1, Math.round(dims.h * rect.h)),
+    }
+  }, [cropEnabled, cropRect])
+
   // --- 单图处理 ---
     const handleProcess = useCallback(async () => {
       if (!preview || !origDims) return
@@ -1119,12 +1466,20 @@ const batchItemsRef = useRef([])
     const timer = setInterval(tick, 200)
 
     try {
-        const { targetW, targetH } = calcTargetDimensions(origDims.w, origDims.h, scaleMode, scale, targetDims, keepRatio, format)
+        const cropOptions = getCropOptions(false, origDims)
+        const sourceDims = getSourceDimsForOutput(origDims)
+        const { targetW, targetH } = calcTargetDimensions(sourceDims.w, sourceDims.h, scaleMode, scale, targetDims, cropEnabled ? false : keepRatio, format)
         setProcessStage(aiUpscale ? '加载 AI 模型' : '解析图片')
         await ensureAiModel()
         setProgress(20)
         setProcessStage('放大图片')
-        const res = await processImageWithCanvas(preview, targetW, targetH, { smartSharpen, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias }, format)
+        const compareRes = await createCompareSourceImage(preview, cropOptions)
+        setCompareSource(prev => {
+          revokeObjectUrl(prev)
+          return compareRes.dataUrl
+        })
+        setCompareSourceDims({ w: compareRes.width, h: compareRes.height })
+        const res = await processImageWithCanvas(preview, targetW, targetH, { smartSharpen, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias }, format, cropOptions)
         setProgress(95)
         setProcessStage('导出结果')
         await new Promise(r => setTimeout(r, 100))
@@ -1152,7 +1507,7 @@ const batchItemsRef = useRef([])
       clearInterval(timer)
       setProcessing(false)
     }
-    }, [preview, origDims, processEstimate, scaleMode, scale, targetDims, keepRatio, format, smartSharpen, sharpenAmount, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias, ensureAiModel, getProcessErrorMessage])
+    }, [preview, origDims, processEstimate, scaleMode, scale, targetDims, keepRatio, format, cropEnabled, smartSharpen, sharpenAmount, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias, ensureAiModel, getProcessErrorMessage, getCropOptions, getSourceDimsForOutput])
 
   // --- 批量处理 ---
   const handleBatchProcess = useCallback(async () => {
@@ -1182,8 +1537,11 @@ const batchItemsRef = useRef([])
       const timer = setInterval(tick, 200)
 
       try {
+          const cropOptions = getCropOptions(true, item.origDims)
+          const cropRectForItem = cropOptions?.rect || null
+          const sourceDims = getSourceDimsForOutput(item.origDims, cropRectForItem || cropRect)
           const { targetW, targetH } = calcTargetDimensions(
-            item.origDims.w, item.origDims.h, scaleMode, scale, targetDims, keepRatio, format
+            sourceDims.w, sourceDims.h, scaleMode, scale, targetDims, cropEnabled ? false : keepRatio, format
           )
           const outputPixels = targetW * targetH
           const inputPixels = item.origDims.w * item.origDims.h
@@ -1197,7 +1555,7 @@ const batchItemsRef = useRef([])
           setBatchItems(prev => prev.map(it => it.id === item.id ? { ...it, stage: aiUpscale ? '加载 AI 模型' : '解析图片' } : it))
           await ensureAiModel()
           setBatchItems(prev => prev.map(it => it.id === item.id ? { ...it, stage: '放大图片' } : it))
-          const res = await processImageWithCanvas(item.preview, targetW, targetH, { smartSharpen, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias }, format)
+          const res = await processImageWithCanvas(item.preview, targetW, targetH, { smartSharpen, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias }, format, cropOptions)
         clearInterval(timer)
 
         const sizeKB = res.size < 1024 * 1024
@@ -1229,7 +1587,7 @@ const batchItemsRef = useRef([])
 
     batchCancelRef.current = false
     setBatchProcessing(false)
-  }, [batchItems, scaleMode, scale, targetDims, keepRatio, format, smartSharpen, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias, ensureAiModel, getProcessErrorMessage])
+  }, [batchItems, scaleMode, scale, targetDims, keepRatio, format, cropEnabled, cropRect, smartSharpen, aiUpscale, reduceArtifacts, deblur, autoLevels, vibrance, clahe, smartDenoise, edgeInterpolation, antiAlias, ensureAiModel, getProcessErrorMessage, getCropOptions, getSourceDimsForOutput])
 
   // --- 单图下载 ---
   const handleDownload = () => {
@@ -1308,6 +1666,12 @@ const batchItemsRef = useRef([])
   pendingCountRef.current = pendingCount
   doneCountRef.current = doneCount
   keyRefs.current = { batchMode, preview, processing, result, batchProcessing, handleBatchProcess, handleProcess, downloadAllAsZip, handleDownload }
+  const compareDisplaySource = compareSource || preview
+  const compareDisplayDims = compareSourceDims || sourceDimsForPreview || origDims
+  const compareSourceLabel = cropEnabled ? '裁切后原图' : '原图'
+
+  if (route === '/format-converter') return <FormatConverter navigate={navigate} />
+  if (route === '/contact') return <ContactPage navigate={navigate} />
 
  return (
     <div className="min-h-screen bg-gray-50/80">
@@ -1320,27 +1684,46 @@ const batchItemsRef = useRef([])
           </div>
           <span className="text-[10px] text-gray-400 leading-none">高清放大&middot;智能锐化&middot;支持 4K/8K</span>
         </div>
-        {/* 批量/单图切换 */}
-        <button
-            onClick={() => { setBatchMode(!batchMode); clearAllBatch(); setFile(null); setPreview(null); setOrigDims(null); setResult(null); setResultDims(null); setResultSize(null); setProcessStage(''); setError(null) }}
-          className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors shrink-0 ${
-            batchMode
-              ? 'bg-indigo-50 border-indigo-500 text-indigo-700'
-              : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
-          }`}
-        >
-          {batchMode ? '\u{1F4E6} 批量模式' : '\u{1F5BC} 单图模式'}
-        </button>
+        <nav className="hidden md:flex items-center gap-1">
+          {TOOL_NAV.map(item => (
+            <button key={item.id} onClick={() => navigate(item.path)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${item.id === 'upscale' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}>
+              {item.label}
+            </button>
+          ))}
+        </nav>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6 pb-24 space-y-6">
 
+        <div className="flex md:hidden items-center gap-1 overflow-x-auto">
+          {TOOL_NAV.map(item => (
+            <button key={item.id} onClick={() => navigate(item.path)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap ${item.id === 'upscale' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'text-gray-500 border-gray-200 bg-white'}`}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <section className="bg-white border border-gray-200 rounded-xl p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => setToolMode(false)}
+              className={`py-2.5 rounded-lg text-sm font-semibold border transition-colors ${!batchMode ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+              单图处理
+            </button>
+            <button onClick={() => setToolMode(true)}
+              className={`py-2.5 rounded-lg text-sm font-semibold border transition-colors ${batchMode ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+              批量处理
+            </button>
+          </div>
+        </section>
+
         {/* ==================== 上传区 ==================== */}
         <section
-          className={`bg-white rounded-xl border-2 border-dashed p-10 text-center transition-all ${
-            batchMode ? 'border-purple-200 hover:border-purple-300 hover:bg-purple-50/50' : 'cursor-pointer'
+          className={`bg-white rounded-xl border border-dashed p-10 text-center transition-all shadow-sm ${
+            batchMode ? 'border-indigo-200 hover:border-indigo-300 hover:bg-indigo-50/30' : 'border-indigo-100 hover:border-indigo-300 hover:bg-indigo-50/20 cursor-pointer'
           } ${
-            dragOver ? 'border-indigo-500 bg-indigo-50/60' : ''
+            dragOver ? 'border-indigo-400 bg-indigo-50/60 ring-4 ring-indigo-100' : ''
           }`}
           onClick={() => { if (!batchMode) fileRef.current?.click(); }}
           onDrop={handleDrop}
@@ -1357,7 +1740,7 @@ const batchItemsRef = useRef([])
             batchItems.length === 0 ? (
               <div className="text-gray-400 py-4">
                 <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-purple-50 to-indigo-50 flex items-center justify-center border border-purple-100/50">
-                  <FolderOpen className="w-8 h-8 text-purple-400" />
+                  <FolderOpen className="w-8 h-8 text-indigo-400" />
                 </div>
                 <p className="text-sm font-medium text-gray-600">点击按钮或拖拽上传图片</p>
                 <p className="text-xs mt-1 text-gray-400">支持多选 JPG &middot; PNG &middot; WebP &middot; 全部使用统一设置放大</p>
@@ -1492,6 +1875,88 @@ const batchItemsRef = useRef([])
           </div>
         )}
 
+        {/* ==================== 裁切适配 ==================== */}
+        <section className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold text-gray-800 text-sm flex items-center gap-2">
+                <Crop className="w-4 h-4 text-indigo-500" />
+                裁切适配
+              </h2>
+              <p className="text-xs text-gray-500 mt-1">
+                {batchMode ? '批量模式会按同一比例统一裁切并导出。' : '单图模式可拖动裁切框，决定最终保留区域。'}
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+              <input type="checkbox" checked={cropEnabled}
+                onChange={(event) => {
+                  const enabled = event.target.checked
+                  setCropEnabled(enabled)
+                  if (enabled && origDims) setCropRect(getDefaultCropRect(origDims.w, origDims.h, cropPreset))
+                  resetResultState()
+                }}
+                className="w-4 h-4 rounded border-gray-300 text-indigo-600" />
+              开启裁切
+            </label>
+          </div>
+
+          {cropEnabled && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {CROP_PRESETS.map(preset => (
+                  <button key={preset.id} onClick={() => applyCropPreset(preset.id)}
+                    className={`px-3 py-2 rounded-lg border text-left ${cropPreset === preset.id ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                    <span className="block text-xs font-semibold">{preset.label}</span>
+                    <span className="block text-[10px] text-gray-400">{preset.w && preset.h ? `${preset.w}x${preset.h}` : '按选区比例'}</span>
+                  </button>
+                ))}
+              </div>
+
+              {!batchMode && preview && (
+                <div ref={cropStageRef}
+                  className="relative mx-auto max-w-xl rounded-xl overflow-hidden bg-gray-950/90 select-none touch-none"
+                  onPointerDown={(event) => event.preventDefault()}>
+                  <img src={preview} alt="裁切预览" className="block w-full h-auto opacity-80" draggable={false} />
+                  <div className="absolute inset-0 pointer-events-none bg-black/10" />
+                  <div
+                    className="absolute border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.42)] cursor-move touch-none"
+                    style={{
+                      left: `${cropRect.x * 100}%`,
+                      top: `${cropRect.y * 100}%`,
+                      width: `${cropRect.w * 100}%`,
+                      height: `${cropRect.h * 100}%`,
+                    }}
+                    onPointerDown={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setCropDrag({ type: 'move', startX: event.clientX, startY: event.clientY, startRect: cropRect })
+                    }}>
+                    <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none">
+                      {Array.from({ length: 9 }).map((_, index) => (
+                        <div key={index} className="border border-white/30" />
+                      ))}
+                    </div>
+                    <button type="button" aria-label="调整裁切区域"
+                      className="absolute -right-2 -bottom-2 w-5 h-5 rounded-full bg-white border border-indigo-500 shadow cursor-nwse-resize"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setCropDrag({ type: 'resize', startX: event.clientX, startY: event.clientY, startRect: cropRect })
+                      }} />
+                  </div>
+                </div>
+              )}
+
+              {!batchMode && !preview && (
+                <p className="text-xs text-gray-400">上传图片后可以拖拽选择裁切区域。</p>
+              )}
+              {batchMode && (
+                <p className="text-xs leading-6 text-gray-500">批量裁切暂时使用居中构图，适合快速导出统一比例。需要逐张精修时，先用单图处理。</p>
+              )}
+            </>
+          )}
+        </section>
+
         {/* ==================== 控制区 ==================== */}
         <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
           {/* 模式切换 */}
@@ -1531,14 +1996,21 @@ const batchItemsRef = useRef([])
                 <span>1x</span><span>5x</span><span>10x</span><span>15x</span><span>20x</span>
               </div>
 
+              {!batchMode && expectedOutput && (
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-700">
+                  预计导出 <strong>{expectedOutput.w}&times;{expectedOutput.h}px</strong>
+                  {cropEnabled && activeCropRatio && <span className="text-indigo-500"> · 裁切比例 {formatRatio(activeCropRatio)}</span>}
+                </div>
+              )}
+
               {!batchMode && origDims && maxScale < 20 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs leading-relaxed">
-                  <p className="text-amber-700">{'\u5f53\u524d\u56fe\u7247'} {origDims.w}&times;{origDims.h}px{'\uff0c\u957f\u8fb9\u4e0a\u9650'} 10000px</p>
-                  <p className="text-amber-600">{'\u6709\u6548\u6700\u5927\u500d\u6570\u4e3a'} <strong>{maxScale}x</strong>{'\uff0c\u8d85\u8fc7\u5c06\u81ea\u52a8\u622a\u65ad'}</p>
+                  <p className="text-amber-700">当前处理尺寸 {sourceDimsForPreview.w}&times;{sourceDimsForPreview.h}px，输出长边上限 10000px</p>
+                  <p className="text-amber-600">有效最大倍数约为 <strong>{maxScale}x</strong>，超过后会按上限等比缩小输出</p>
                 </div>
               )}
                 {!batchMode && expectedOutput && expectedOutput.capped && (
-                  <p className="text-xs text-amber-600">* {'\u5df2\u8d85\u8fc7\u4e0a\u9650\uff0c\u5b9e\u9645\u8f93\u51fa\u4f1a\u6309'} 10000px {'\u957f\u8fb9\u88c1\u5207'}</p>
+                  <p className="text-xs text-amber-600">* 已超过上限，实际输出会按 10000px 长边等比缩小，不会额外裁切画面</p>
                 )}
                 {!batchMode && processEstimate?.warnings.map((warning) => (
                   <p key={warning} className="text-xs text-amber-600">* {warning}</p>
@@ -1551,37 +2023,51 @@ const batchItemsRef = useRef([])
             <>
               <div className="flex gap-2">
                 <button onClick={() => setTargetMode('preset')}
-                  className={`px-4 py-2 rounded-lg text-xs font-medium border ${targetMode === 'preset' ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-600'}`}>{'\u9884\u8bbe\u5206\u8fa8\u7387'}</button>
+                  className={`px-4 py-2 rounded-lg text-xs font-medium border ${targetMode === 'preset' ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-600'}`}>清晰度等级</button>
                 <button onClick={() => setTargetMode('custom')}
                   className={`px-4 py-2 rounded-lg text-xs font-medium border ${targetMode === 'custom' ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-600'}`}>{'\u81ea\u5b9a\u4e49'}</button>
               </div>
               {targetMode === 'preset' ? (
                 <div className="grid grid-cols-2 gap-2">
-                  {TARGET_PRESETS.map((opt, i) => (
-                    <button key={i} onClick={() => setTargetIdx(i)}
-                      className={`py-3 px-4 rounded-lg text-sm border text-left ${targetIdx === i ? 'bg-indigo-50 border-indigo-500' : 'border-gray-200'}`}>
-                      <div className={`font-bold ${targetIdx === i ? 'text-indigo-700' : 'text-gray-700'}`}>{opt.label}</div>
-                      <div className={`text-xs ${targetIdx === i ? 'text-indigo-500' : 'text-gray-400'}`}>
-                        {keepRatio ? `${opt.w}\u00d7${opt.h}\uff08\u6700\u5927\uff09` : `${opt.w}\u00d7${opt.h}`} &middot; {opt.ratio}
-                      </div>
-                    </button>
-                  ))}
+                  {QUALITY_PRESETS.map((opt, i) => {
+                    const displayDims = previewTargetPreset(opt)
+                    return (
+                      <button key={i} onClick={() => setTargetIdx(i)}
+                        className={`py-3 px-4 rounded-lg text-sm border text-left ${targetIdx === i ? 'bg-indigo-50 border-indigo-500' : 'border-gray-200'}`}>
+                        <div className={`font-bold ${targetIdx === i ? 'text-indigo-700' : 'text-gray-700'}`}>{opt.label}</div>
+                        <div className={`text-xs ${targetIdx === i ? 'text-indigo-500' : 'text-gray-400'}`}>
+                          {displayDims.w}&times;{displayDims.h} · 长边 {opt.edge}px
+                        </div>
+                      </button>
+                    )
+                  })}
                 </div>
               ) : (
-                <div className="flex gap-3 items-end">
-                  <div className="flex-1">
-                    <label className="text-xs text-gray-500 mb-1 block">{'\u5bbd\u5ea6'} (px)</label>
-                    <input type="number" min="1" max="10000" value={customW}
-                      onChange={(e) => setCustomW(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500" />
+                <div className="space-y-2">
+                  <div className="flex gap-3 items-end">
+                    <div className="flex-1">
+                      <label className="text-xs text-gray-500 mb-1 block">{'\u5bbd\u5ea6'} (px)</label>
+                      <input type="number" min="1" max="10000" value={customW}
+                        onChange={(e) => handleCustomWidthChange(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500" />
+                    </div>
+                    <div className="text-gray-400 pb-2 font-mono">&times;</div>
+                    <div className="flex-1">
+                      <label className="text-xs text-gray-500 mb-1 block">{'\u9ad8\u5ea6'} (px)</label>
+                      <input type="number" min="1" max="10000" value={customH}
+                        onChange={(e) => handleCustomHeightChange(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500" />
+                    </div>
                   </div>
-                  <div className="text-gray-400 pb-2 font-mono">&times;</div>
-                  <div className="flex-1">
-                    <label className="text-xs text-gray-500 mb-1 block">{'\u9ad8\u5ea6'} (px)</label>
-                    <input type="number" min="1" max="10000" value={customH}
-                      onChange={(e) => setCustomH(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500" />
-                  </div>
+                  {activeOutputRatio && (
+                    <p className="text-xs text-indigo-600">已按当前比例 {formatRatio(activeOutputRatio)} 联动宽高，修改一个数值会自动同步另一个数值。</p>
+                  )}
+                </div>
+              )}
+              {!batchMode && expectedOutput && (
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-700">
+                  预计导出 <strong>{expectedOutput.w}&times;{expectedOutput.h}px</strong>
+                  {activeCropRatio && <span className="text-indigo-500"> · 裁切比例 {formatRatio(activeCropRatio)}</span>}
                 </div>
               )}
             </>
@@ -1606,10 +2092,10 @@ const batchItemsRef = useRef([])
               </div>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
-                  <input type="checkbox" checked={keepRatio}
+                  <input type="checkbox" checked={keepRatio && !cropEnabled} disabled={cropEnabled}
                     onChange={(e) => setKeepRatio(e.target.checked)}
                     className="w-3 h-3 rounded border-gray-300 text-indigo-500" />
-                {'\u4fdd\u6301\u6bd4\u4f8b'}
+                  {cropEnabled ? '按裁切比例输出' : '\u4fdd\u6301\u6bd4\u4f8b'}
                 </label>
                 <button onClick={handleSmartDetect}
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 transition-colors">
@@ -1683,10 +2169,10 @@ const batchItemsRef = useRef([])
                   {aiUpscale && (
                     <p className="mt-2 text-[11px] leading-5 text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
                       {aiModelLoading
-                        ? '正在加载 AI 模型，首次使用可能需要数秒。'
+                        ? '正在下载并加载浏览器端 AI 模型，首次使用可能需要数秒。'
                         : aiModelReady
-                          ? 'AI 模型已就绪，处理大图时会占用更多浏览器内存。'
-                          : '首次使用会下载 AI 模型，处理过程完全在浏览器端完成。'}
+                          ? 'AI 模型已在本地浏览器就绪，图片内容不会上传到 TU Scale 服务器。'
+                          : 'AI 放大会下载模型到浏览器运行，图片内容不上传服务器。'}
                     </p>
                   )}
                   {!batchMode && processEstimate?.blockReason && (
@@ -1750,7 +2236,7 @@ const batchItemsRef = useRef([])
         </div>
 
         {/* ==================== 单图 - 前后对比 ==================== */}
-        {!batchMode && result && origDims && (
+        {!batchMode && result && compareDisplaySource && compareDisplayDims && (
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
               <h3 className="font-semibold text-gray-800 text-sm flex items-center gap-2">
@@ -1775,14 +2261,14 @@ const batchItemsRef = useRef([])
             <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
               <div className="p-4">
                 <div className="flex items-center gap-2 mb-2.5">
-                  <span className="text-xs font-semibold text-gray-700 bg-gray-100 px-2 py-0.5 rounded">{'\u539f\u56fe'}</span>
-                  <span className="text-[10px] text-gray-400">{origDims.w}&times;{origDims.h}px</span>
+                  <span className="text-xs font-semibold text-gray-700 bg-gray-100 px-2 py-0.5 rounded">{compareSourceLabel}</span>
+                  <span className="text-[10px] text-gray-400">{compareDisplayDims.w}&times;{compareDisplayDims.h}px</span>
                 </div>
                 <div ref={leftScrollRef}
                   onScroll={() => { if (syncingRef.current || !syncedScroll) return; syncingRef.current = true; const s = leftScrollRef.current, t = rightScrollRef.current; if (s && t) { const pctX = s.scrollWidth > s.clientWidth ? s.scrollLeft / (s.scrollWidth - s.clientWidth) : 0; const pctY = s.scrollHeight > s.clientHeight ? s.scrollTop / (s.scrollHeight - s.clientHeight) : 0; if (t.scrollWidth > t.clientWidth) t.scrollLeft = pctX * (t.scrollWidth - t.clientWidth); if (t.scrollHeight > t.clientHeight) t.scrollTop = pctY * (t.scrollHeight - t.clientHeight); } requestAnimationFrame(() => { syncingRef.current = false; }); }}
                   className="overflow-auto max-h-72 bg-gray-50 rounded-lg border border-gray-100 cursor-pointer hover:border-indigo-200 transition-colors"
                   onClick={() => { setModalMode('compare'); setShowModal(true); }}>
-                  <img src={preview} alt="\u539f\u56fe" style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left', minWidth: '100%' }} className="block" />
+                  <img src={compareDisplaySource} alt={compareSourceLabel} style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left', minWidth: '100%' }} className="block" />
                 </div>
               </div>
               <div className="p-4">
@@ -1807,8 +2293,8 @@ const batchItemsRef = useRef([])
             <div className="flex items-center justify-between">
               <h2 className="font-semibold text-gray-800 text-sm">{'\u5904\u7406\u7ed3\u679c'}</h2>
               <div className="text-xs text-gray-500 text-right">
-                <div>{origDims.w}&times;{origDims.h} &rarr; <strong className="text-indigo-600">{resultDims.w}&times;{resultDims.h}</strong></div>
-                <div className="text-gray-400">{(resultDims.w / origDims.w).toFixed(1)}x &middot; {resultSize}</div>
+                <div>{compareDisplayDims?.w || origDims.w}&times;{compareDisplayDims?.h || origDims.h} &rarr; <strong className="text-indigo-600">{resultDims.w}&times;{resultDims.h}</strong></div>
+                <div className="text-gray-400">{(resultDims.w / (compareDisplayDims?.w || origDims.w)).toFixed(1)}x &middot; {resultSize}</div>
               </div>
             </div>
             <div className="rounded-xl overflow-hidden bg-gray-50 border border-gray-100">
@@ -1855,13 +2341,38 @@ const batchItemsRef = useRef([])
           </div>
         )}
 
+        <section className="bg-white border border-gray-200 rounded-xl p-5">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="font-semibold text-gray-900 text-sm">更多本地图片工具</h2>
+              <p className="text-xs text-gray-500 mt-1">保留最常用的本地处理工具，图片不上传服务器。</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button onClick={() => navigate('/format-converter')}
+              className="text-left border border-gray-200 rounded-xl p-4 hover:border-indigo-200 hover:bg-indigo-50/40 transition-colors">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <FileImage className="w-4 h-4 text-indigo-500" /> 本地图片格式转换
+              </div>
+              <p className="text-xs leading-6 text-gray-500 mt-1">批量转换 JPG、PNG、WebP、AVIF，支持质量调节和 ZIP 下载。</p>
+            </button>
+            <button onClick={() => navigate('/contact')}
+              className="text-left border border-gray-200 rounded-xl p-4 hover:border-indigo-200 hover:bg-indigo-50/40 transition-colors">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <MessageSquare className="w-4 h-4 text-indigo-500" /> 反馈联系
+              </div>
+              <p className="text-xs leading-6 text-gray-500 mt-1">告诉我你想要的格式、裁切比例或新的图片处理功能。</p>
+            </button>
+          </div>
+        </section>
+
         {/* 说明 */}
         <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 text-xs text-blue-800 leading-relaxed">
           <ul className="list-disc list-inside space-y-1">
             <li><strong>{'\u591a\u7ea7\u653e\u5927'}</strong>{'\uff1a\u5927\u500d\u6570\u65f6\u81ea\u52a8\u5206\u9636\u6bb5\u653e\u5927\uff0c\u6bcf\u7ea7\u4e2d\u95f4\u505a\u9510\u5316'}</li>
             <li><strong>{'\u589e\u5f3a\u753b\u8d28'}</strong>{'\uff1a\u9ad8\u8d28\u91cf\u91cd\u91c7\u6837 + \u667a\u80fd\u9510\u5316'}</li>
             <li>{'\u6ce8\u610f\uff1a\u653e\u5927\u7b97\u6cd5\u65e0\u6cd5\u51ed\u7a7a\u589e\u52a0\u7ec6\u8282\uff0c\u539f\u56fe\u8d28\u91cf\u8d8a\u597d\uff0c\u653e\u5927\u6548\u679c\u8d8a\u4f73'}</li>
-            <li>{'\u957f\u8fb9\u50cf\u7d20\u4e0a\u9650'} <strong>10000px</strong>{'\uff0c\u8d85\u8fc7\u4f1a\u81ea\u52a8\u88c1\u5207'}</li>
+            <li>{'\u957f\u8fb9\u50cf\u7d20\u4e0a\u9650'} <strong>10000px</strong>{'\uff0c\u8d85\u8fc7\u4f1a\u81ea\u52a8\u9650\u5236\u8f93\u51fa\u5c3a\u5bf8'}</li>
             <li>{'\u6279\u91cf\u653e\u5927\u65f6\u6240\u6709\u56fe\u7247\u4f7f\u7528\u540c\u4e00\u53c2\u6570\u8bbe\u7f6e\uff0c\u6309\u987a\u5e8f\u9010\u4e00\u5904\u7406'}</li>
             <li>{'\u6279\u91cf\u6a21\u5f0f\u4e0b\u53ef\u4ee5\u9009\u62e9\u6587\u4ef6\u5939\u4e0a\u4f20\uff0c\u81ea\u52a8\u8fc7\u6ee4\u56fe\u7247\u6587\u4ef6'}</li>
             <li>{'\u9ed8\u8ba4\u5728\u6d4f\u89c8\u5668\u672c\u5730\u5904\u7406\u56fe\u7247\uff0c\u65e0\u9700\u767b\u5f55\uff0c\u4e0d\u4f1a\u628a\u56fe\u7247\u4e0a\u4f20\u5230 TU Scale \u670d\u52a1\u5668'}</li>
@@ -1872,7 +2383,7 @@ const batchItemsRef = useRef([])
           <div className="space-y-2">
             <h2 className="text-lg font-semibold text-gray-900">{'\u514d\u8d39\u5728\u7ebf\u56fe\u7247\u653e\u5927\u5de5\u5177'}</h2>
             <p className="text-sm leading-7">
-              TU Scale {'\u662f\u4e00\u4e2a\u6d4f\u89c8\u5668\u7aef\u7684\u56fe\u7247\u653e\u5927\u5de5\u5177\uff0c\u53ef\u4ee5\u5c06 JPG\u3001PNG \u548c WebP \u56fe\u7247\u6309\u500d\u6570\u653e\u5927\uff0c\u4e5f\u53ef\u4ee5\u8f93\u51fa Full HD\u30012K\u30014K \u6216 8K \u7b49\u76ee\u6807\u5206\u8fa8\u7387\u3002\u5b83\u9002\u5408\u5904\u7406\u7535\u5546\u4e3b\u56fe\u3001\u4ea7\u54c1\u56fe\u3001\u5934\u50cf\u3001\u63d2\u753b\u3001\u8001\u7167\u7247\u548c\u9700\u8981\u63d0\u5347\u6e05\u6670\u5ea6\u7684\u7f51\u7ad9\u914d\u56fe\u3002'}
+              TU Scale {'\u662f\u4e00\u4e2a\u6d4f\u89c8\u5668\u7aef\u7684\u56fe\u7247\u653e\u5927\u5de5\u5177\uff0c\u53ef\u4ee5\u5c06 JPG\u3001PNG \u548c WebP \u56fe\u7247\u6309\u500d\u6570\u653e\u5927\uff0c\u4e5f\u53ef\u4ee5\u6309 1080\u7ea7\u30012K\u7ea7\u30014K\u7ea7\u6216 8K\u7ea7\u6e05\u6670\u5ea6\u8f93\u51fa\uff0c\u5e76\u6839\u636e\u539f\u56fe\u6216\u88c1\u5207\u6bd4\u4f8b\u81ea\u52a8\u8ba1\u7b97\u5bbd\u9ad8\u3002\u5b83\u9002\u5408\u5904\u7406\u7535\u5546\u4e3b\u56fe\u3001\u4ea7\u54c1\u56fe\u3001\u5934\u50cf\u3001\u63d2\u753b\u3001\u8001\u7167\u7247\u548c\u9700\u8981\u63d0\u5347\u6e05\u6670\u5ea6\u7684\u7f51\u7ad9\u914d\u56fe\u3002'}
             </p>
             <p className="text-sm leading-7">
               {'\u5de5\u5177\u652f\u6301\u667a\u80fd\u9510\u5316\u3001\u81ea\u52a8\u8272\u9636\u3001\u81ea\u7136\u9971\u548c\u5ea6\u3001\u6297\u952f\u9f7f\u548c AI \u56fe\u7247\u653e\u5927\u3002\u5982\u679c\u9700\u8981\u4e00\u6b21\u5904\u7406\u591a\u5f20\u56fe\u7247\uff0c\u4e5f\u53ef\u4ee5\u4f7f\u7528\u6279\u91cf\u56fe\u7247\u653e\u5927\u6a21\u5f0f\uff0c\u6309\u540c\u4e00\u7ec4\u53c2\u6570\u987a\u5e8f\u751f\u6210\u9ad8\u6e05\u56fe\u7247\u3002'}
@@ -1889,7 +2400,7 @@ const batchItemsRef = useRef([])
             </div>
             <div className="border border-gray-200 rounded-xl p-4 bg-white">
               <h3 className="text-sm font-semibold text-gray-900 mb-1">{'\u652f\u6301 4K/8K'}</h3>
-              <p className="text-xs leading-6 text-gray-500">{'\u53ef\u6309\u653e\u5927\u500d\u6570\u6216\u76ee\u6807\u5206\u8fa8\u7387\u8f93\u51fa\uff0c\u957f\u8fb9\u50cf\u7d20\u4e0a\u9650\u4e3a 10000px\u3002'}</p>
+              <p className="text-xs leading-6 text-gray-500">{'\u53ef\u6309\u653e\u5927\u500d\u6570\u6216\u6e05\u6670\u5ea6\u7b49\u7ea7\u8f93\u51fa\uff0c8K\u7ea7\u4ee3\u8868\u6700\u957f\u8fb9 7680px\uff0c\u9875\u9762\u957f\u8fb9\u4e0a\u9650\u4e3a 10000px\u3002'}</p>
             </div>
             <div className="border border-gray-200 rounded-xl p-4 bg-white">
               <h3 className="text-sm font-semibold text-gray-900 mb-1">{'\u652f\u6301\u6279\u91cf\u56fe\u7247\u653e\u5927'}</h3>
@@ -1919,39 +2430,7 @@ const batchItemsRef = useRef([])
 
       <footer className="text-center py-6 text-xs text-gray-400 border-t border-gray-100 mt-8">TU Scale&middot;{'\u56fe\u7247\u653e\u5927\u5de5\u5177'} &middot; {'\u57fa\u4e8e'} Sharp {'\u5f15\u64ce'}</footer>
 
-      {/* 猫爪打赏按钮 */}
-      <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-40 flex flex-col items-end">
-        {showDonateTooltip && (
-          <div className="mb-2.5 px-4 py-2 bg-white rounded-xl shadow-lg border border-gray-100 text-sm text-gray-700 whitespace-nowrap relative animate-fade-in">
-            {'\u8bf7\u4f5c\u8005\u7684\u732b\u732b\u5403\u7f50\u7f50'} 🐱
-            <div className="absolute -bottom-1 right-6 w-3 h-3 bg-white border-r border-b border-gray-100 transform rotate-45" />
-          </div>
-        )}
-        <img src="/paw-icon.png" alt="打赏"
-          onClick={() => setShowRewardModal(true)}
-          onMouseEnter={() => setShowDonateTooltip(true)}
-          onMouseLeave={() => setShowDonateTooltip(false)}
-          className="w-11 h-11 sm:w-[52px] sm:h-[52px] cursor-pointer shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 active:scale-95" />
-      </div>
-
-      {/* 微信赞赏码弹窗 */}
-      {showRewardModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
-          onClick={() => setShowRewardModal(false)}>
-          <div className="bg-white rounded-2xl p-6 shadow-2xl max-w-[300px] w-full mx-4 relative animate-fade-in"
-            onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setShowRewardModal(false)}
-              className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full shadow-md border border-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors">
-              <X className="w-4 h-4" />
-            </button>
-            <div className="text-center">
-              <p className="text-sm font-semibold text-gray-700 mb-3">{'\u626b\u4e00\u626b\uff0c\u8bf7\u732b\u732b\u5403\u7f50\u7f50'} 🐱</p>
-              <img src="/wechat-reward.png" alt="\u5fae\u4fe1\u8d5e\u8d4f\u7801" className="w-48 h-48 mx-auto rounded-lg" />
-              <p className="text-xs text-gray-400 mt-3">{'\u611f\u8c22\u60a8\u7684\u652f\u6301'} ❤️</p>
-            </div>
-          </div>
-        </div>
-      )}
+      <RewardButton />
 
       {/* 全屏查看 - 单图模式 */}
       {showModal && modalMode === 'single' && result && (
@@ -1985,7 +2464,7 @@ const batchItemsRef = useRef([])
       )}
 
       {/* 全屏查看 - 对比模式 */}
-      {showModal && modalMode === 'compare' && result && origDims && (
+      {showModal && modalMode === 'compare' && result && compareDisplaySource && compareDisplayDims && (
         <div className="fixed inset-0 z-50 bg-black/95 flex flex-col" onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}>
           <div className="flex items-center justify-between px-5 py-3 bg-black/60 backdrop-blur-sm border-b border-white/10 shrink-0">
             <h3 className="text-sm text-white/80 font-semibold flex items-center gap-2">
@@ -2010,13 +2489,13 @@ const batchItemsRef = useRef([])
           <div className="flex-1 flex flex-col sm:flex-row gap-0 min-h-0">
             <div className="flex-1 flex flex-col min-w-0 border-r-0 sm:border-r border-white/10">
               <div className="px-4 py-2 flex items-center gap-2 shrink-0">
-                <span className="text-[10px] font-semibold text-white/60 bg-white/10 px-2 py-0.5 rounded">{'\u539f\u56fe'}</span>
-                <span className="text-[10px] text-white/40">{origDims.w}&times;{origDims.h}px</span>
+                <span className="text-[10px] font-semibold text-white/60 bg-white/10 px-2 py-0.5 rounded">{compareSourceLabel}</span>
+                <span className="text-[10px] text-white/40">{compareDisplayDims.w}&times;{compareDisplayDims.h}px</span>
               </div>
               <div ref={fsLeftScrollRef}
                 onScroll={() => { if (fsSyncingRef.current || !syncedScroll) return; fsSyncingRef.current = true; const s = fsLeftScrollRef.current, t = fsRightScrollRef.current; if (s && t) { const pctX = s.scrollWidth > s.clientWidth ? s.scrollLeft / (s.scrollWidth - s.clientWidth) : 0; const pctY = s.scrollHeight > s.clientHeight ? s.scrollTop / (s.scrollHeight - s.clientHeight) : 0; if (t.scrollWidth > t.clientWidth) t.scrollLeft = pctX * (t.scrollWidth - t.clientWidth); if (t.scrollHeight > t.clientHeight) t.scrollTop = pctY * (t.scrollHeight - t.clientHeight); } requestAnimationFrame(() => { fsSyncingRef.current = false; }); }}
                 className="flex-1 overflow-auto bg-black/20">
-                <img src={preview} alt="\u539f\u56fe" style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left' }} className="block" />
+                <img src={compareDisplaySource} alt={compareSourceLabel} style={{ transform: `scale(${compareZoom})`, transformOrigin: 'top left' }} className="block" />
               </div>
             </div>
             <div className="flex-1 flex flex-col min-w-0">

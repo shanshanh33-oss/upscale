@@ -1,0 +1,178 @@
+import { useMemo, useState } from 'react'
+import { CheckCircle, Copy, HeartHandshake, Lightbulb, Mail, MessageSquare, Send, Wrench } from 'lucide-react'
+import RewardButton from './RewardButton'
+
+const FEEDBACK_TYPES = [
+  { id: 'feature', label: '功能建议', icon: Lightbulb },
+  { id: 'bug', label: '问题反馈', icon: Wrench },
+  { id: 'format', label: '格式支持', icon: MessageSquare },
+  { id: 'business', label: '商务合作', icon: HeartHandshake },
+]
+
+const CONTACT_EMAIL = '994815006@qq.com'
+
+export default function ContactPage({ navigate }) {
+  const [type, setType] = useState('feature')
+  const [message, setMessage] = useState('')
+  const [contact, setContact] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [emailCopied, setEmailCopied] = useState(false)
+  const [mailNotice, setMailNotice] = useState('')
+
+  const feedbackText = useMemo(() => {
+    const label = FEEDBACK_TYPES.find(item => item.id === type)?.label || '反馈'
+    return [
+      `反馈类型：${label}`,
+      `联系方式：${contact || '未填写'}`,
+      '',
+      '反馈内容：',
+      message || '请在这里填写你的建议、问题或合作需求。',
+      '',
+      '页面：TU Scale',
+      `时间：${new Date().toLocaleString('zh-CN')}`,
+    ].join('\n')
+  }, [type, message, contact])
+
+  const copyFeedback = async () => {
+    await navigator.clipboard.writeText(feedbackText)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1800)
+  }
+
+  const copyEmail = async () => {
+    await navigator.clipboard.writeText(CONTACT_EMAIL)
+    setEmailCopied(true)
+    setTimeout(() => setEmailCopied(false), 1800)
+  }
+
+  const openMail = () => {
+    const subject = encodeURIComponent('TU Scale 反馈')
+    const body = encodeURIComponent(feedbackText)
+    window.location.href = `mailto:${CONTACT_EMAIL}?subject=${subject}&body=${body}`
+    setMailNotice('如果没有反应，说明当前浏览器没有绑定邮件 App。请复制邮箱和反馈内容后手动发送。')
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50/80">
+      <ToolHeader active="contact" navigate={navigate} />
+      <main className="max-w-5xl mx-auto px-4 py-6 pb-20 space-y-5">
+        <section className="bg-white border border-gray-200 rounded-xl p-5 space-y-5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h1 className="text-xl font-bold text-gray-900">反馈与联系</h1>
+              <p className="text-sm text-gray-500 mt-1">告诉我你想要什么功能、哪里不好用，或者是否需要批量商品图处理合作。</p>
+            </div>
+            <button onClick={copyEmail}
+              className="inline-flex items-center gap-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2 hover:bg-indigo-100">
+              {emailCopied ? <CheckCircle className="w-3.5 h-3.5" /> : <Mail className="w-3.5 h-3.5" />}
+              {emailCopied ? '邮箱已复制' : CONTACT_EMAIL}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {FEEDBACK_TYPES.map(item => {
+              const Icon = item.icon
+              return (
+                <button key={item.id} onClick={() => setType(item.id)}
+                  className={`text-left border rounded-xl p-3 transition-colors ${type === item.id ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 bg-gray-50 hover:bg-indigo-50/40'}`}>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                    <Icon className="w-4 h-4 text-indigo-500" />
+                    {item.label}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
+            <div className="space-y-4">
+              <label className="block space-y-2">
+                <span className="text-sm font-semibold text-gray-800">你的反馈</span>
+                <textarea value={message} onChange={(event) => setMessage(event.target.value)}
+                  rows={9}
+                  placeholder="例如：希望增加批量压缩到 2MB 以下、支持 PSD 预览导出、电商图增加抠图换背景、某个浏览器转换失败..."
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm leading-6 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 resize-y" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-sm font-semibold text-gray-800">联系方式（选填）</span>
+                <input value={contact} onChange={(event) => setContact(event.target.value)}
+                  placeholder="邮箱、微信或其他联系方式。也可以不填。"
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10" />
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button onClick={copyFeedback}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold">
+                  {copied ? <CheckCircle className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  {copied ? '已复制' : '复制反馈内容'}
+                </button>
+                <button onClick={openMail}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-sm font-semibold">
+                  <Send className="w-4 h-4" /> 尝试打开邮件 App
+                </button>
+              </div>
+              {mailNotice && <p className="text-xs leading-6 text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{mailNotice}</p>}
+              <p className="text-xs leading-6 text-gray-500">浏览器不能直接替用户发送邮件；真正一键提交需要接入后端邮件服务或表单服务，并增加防垃圾提交保护。</p>
+            </div>
+
+            <aside className="border border-gray-200 rounded-xl bg-gray-50 p-4 space-y-3">
+              <h2 className="text-sm font-semibold text-gray-900">我最想知道这些</h2>
+              <ul className="space-y-2 text-xs leading-6 text-gray-600">
+                <li>你是做电商、自媒体，还是临时处理图片？</li>
+                <li>哪个格式、尺寸或平台预设最常用？</li>
+                <li>商品图规范化哪里不够顺手，尺寸或裁切是否准确？</li>
+                <li>你愿意为什么高级功能付费？批量、抠图、换背景，还是更强 AI？</li>
+              </ul>
+              <div className="border-t border-gray-200 pt-3">
+                <p className="text-xs leading-6 text-gray-500">如果你只是想支持维护，也可以继续使用右下角的赞赏入口。产品建议比赞赏还珍贵一点点。</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <InfoCard title="功能建议" text="告诉我你希望增加哪些图片工具，比如压缩、裁剪、抠图、换背景或格式支持。" />
+          <InfoCard title="问题报告" text="如果某种图片无法读取、转换失败、下载失败，可以描述浏览器和图片格式。" />
+          <InfoCard title="合作需求" text="如果你有批量商品图处理、店铺图片规范化或定制工具需求，可以先留下联系方式。" />
+        </section>
+      </main>
+      <RewardButton />
+    </div>
+  )
+}
+
+function InfoCard({ title, text }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4">
+      <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+      <p className="text-xs leading-6 text-gray-500 mt-1">{text}</p>
+    </div>
+  )
+}
+
+function ToolHeader({ active, navigate }) {
+  const items = [
+    { id: 'upscale', label: '图片放大', path: '/' },
+    { id: 'converter', label: '格式转换', path: '/format-converter' },
+    { id: 'contact', label: '反馈联系', path: '/contact' },
+  ]
+
+  return (
+    <header className="bg-white/95 backdrop-blur-sm border-b border-gray-100 px-5 py-3 sticky top-0 z-10 shadow-sm">
+      <div className="max-w-6xl mx-auto flex items-center gap-3">
+        <img src="/logo.png" alt="TU Scale" className="h-10 w-auto shrink-0" />
+        <div className="min-w-0 mr-auto">
+          <div className="text-base font-bold tracking-tight" style={{ color: '#8040f0' }}>TU Scale</div>
+          <div className="text-[10px] text-gray-400 leading-none">本地图片工具箱</div>
+        </div>
+        <nav className="flex items-center gap-1 overflow-x-auto">
+          {items.map(item => (
+            <button key={item.id} onClick={() => navigate(item.path)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${active === item.id ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'text-gray-500 hover:bg-gray-50 border border-transparent'}`}>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+    </header>
+  )
+}
