@@ -13,8 +13,8 @@ const ALLOWED_EVENTS = new Set([
   'download_zip',
 ])
 
-const UNIQUE_VISITOR_EVENT = 'unique_visitor'
 const ID_PATTERN = /^[a-z]_[a-zA-Z0-9-]{8,80}$/
+const EVENT_LOG_TTL = 60 * 60 * 24 * 60
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -47,25 +47,21 @@ const countUniqueVisitor = async (kv, visitorId, day) => {
 
   const totalKey = `visitor:total:${visitorId}`
   const dayKey = `visitor:day:${day}:${visitorId}`
-  const [seenEver, seenToday] = await Promise.all([
-    kv.get(totalKey),
-    kv.get(dayKey),
+  await Promise.all([
+    kv.put(totalKey, '1'),
+    kv.put(dayKey, '1', { expirationTtl: EVENT_LOG_TTL }),
   ])
+}
 
-  const writes = []
-  if (!seenEver) {
-    writes.push(
-      kv.put(totalKey, '1'),
-      addCount(kv, `total:${UNIQUE_VISITOR_EVENT}`, 1),
-    )
-  }
-  if (!seenToday) {
-    writes.push(
-      kv.put(dayKey, '1', { expirationTtl: 60 * 60 * 24 * 45 }),
-      addCount(kv, `day:${day}:${UNIQUE_VISITOR_EVENT}`, 1),
-    )
-  }
-  await Promise.all(writes)
+const writeEventLog = async (kv, { day, event, amount, visitorId, sessionId }) => {
+  const id = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const key = `event:${day}:${Date.now()}:${id}`
+  await kv.put(key, JSON.stringify({
+    event,
+    amount,
+    visitorId: ID_PATTERN.test(visitorId) ? visitorId : '',
+    sessionId: ID_PATTERN.test(sessionId) ? sessionId : '',
+  }), { expirationTtl: EVENT_LOG_TTL })
 }
 
 export async function onRequestPost(context) {
@@ -89,6 +85,7 @@ export async function onRequestPost(context) {
   const sessionId = String(body?.data?.sessionId || '').trim()
 
   await Promise.all([
+    writeEventLog(kv, { day, event, amount, visitorId, sessionId }),
     addCount(kv, `total:${event}`, amount),
     addCount(kv, `day:${day}:${event}`, amount),
     countUniqueVisitor(kv, visitorId, day),

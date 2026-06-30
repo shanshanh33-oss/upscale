@@ -20,18 +20,18 @@ const METRICS = [
 
 const LABELS = {
   page_view: '页面浏览',
-  session_start: '访问人数粗略值',
-  unique_visitor: '独立访客',
-  image_uploaded: '上传图片',
+  session_start: '访问会话',
+  unique_visitor: '独立访客（6月28日起）',
+  image_uploaded: '上传图片数',
   ai_enabled: '开启 AI',
   process_start: '开始处理',
   process_success: '单图处理成功',
   process_error: '单图处理失败',
-  batch_start: '批量开始',
+  batch_start: '批量待处理图片数',
   batch_item_success: '批量成功图片',
   batch_item_error: '批量失败图片',
-  download: '下载图片',
-  download_zip: '下载 ZIP',
+  download: '单张下载图片数',
+  download_zip: 'ZIP 导出图片数',
 }
 
 const json = (body, status = 200) => new Response(JSON.stringify(body, null, 2), {
@@ -72,6 +72,8 @@ const readKvList = async (kv, prefix) => {
   return keys
 }
 
+const createEmptyMetrics = () => Object.fromEntries(METRICS.map((metric) => [metric, 0]))
+
 const formatNumber = (value) => new Intl.NumberFormat('zh-CN').format(value || 0)
 
 const getToday = (days) => days[0] || {}
@@ -105,6 +107,95 @@ const maskId = (id) => {
   return `${prefix}...${tail}`
 }
 
+const addIdentityRecord = (records, id, event, amount) => {
+  if (!id || !EVENTS.includes(event)) return
+  const current = records.get(id) || { id }
+  current[event] = (current[event] || 0) + amount
+  records.set(id, current)
+}
+
+const normalizeIdentityRows = (records) => [...records.values()].map((record) => {
+  const processed = sumEvents(record, ['process_success', 'batch_item_success'])
+  const errors = sumEvents(record, ['process_error', 'batch_item_error'])
+  const exportedImages = sumEvents(record, ['download', 'download_zip'])
+  const score = (record.image_uploaded || 0) + processed + exportedImages
+  return {
+    ...record,
+    exportedImages,
+    errors,
+    processed,
+    score,
+  }
+}).sort((a, b) => b.score - a.score)
+
+const getEventLogStats = async (kv, day) => {
+  const keys = await readKvList(kv, `event:${day}:`)
+  const totals = createEmptyMetrics()
+  const visitors = new Map()
+  const sessions = new Map()
+  const uniqueVisitors = new Set()
+
+  await Promise.all(keys.map(async ({ name }) => {
+    let record
+    try {
+      record = JSON.parse(await kv.get(name) || '{}')
+    } catch {
+      return
+    }
+
+    const event = String(record.event || '')
+    if (!EVENTS.includes(event)) return
+    const amount = Math.max(1, Number.parseInt(record.amount || '1', 10) || 1)
+    const visitorId = String(record.visitorId || '')
+    const sessionId = String(record.sessionId || '')
+
+    totals[event] += amount
+    if (visitorId) {
+      uniqueVisitors.add(visitorId)
+      addIdentityRecord(visitors, visitorId, event, amount)
+    }
+    if (sessionId) addIdentityRecord(sessions, sessionId, event, amount)
+  }))
+
+  totals.unique_visitor = uniqueVisitors.size
+
+  return {
+    hasLogs: keys.length > 0,
+    sessions: normalizeIdentityRows(sessions).slice(0, 8),
+    totals,
+    visitors: normalizeIdentityRows(visitors).slice(0, 8),
+  }
+}
+
+const getIdentityTotals = async (kv, type, day) => {
+  const prefix = `${type}:day:${day}:`
+  const keys = await readKvList(kv, prefix)
+  const totals = createEmptyMetrics()
+  const ids = new Set()
+
+  await Promise.all(keys.map(async ({ name }) => {
+    const rest = name.slice(prefix.length)
+    const parts = rest.split(':')
+    const id = parts[0]
+    if (id) ids.add(id)
+    if (parts.length !== 2) return
+    const event = parts[1]
+    if (!EVENTS.includes(event)) return
+    totals[event] += await readCount(kv, name)
+  }))
+
+  if (type === 'visitor') totals.unique_visitor = ids.size
+  return totals
+}
+
+const mergeMetricMaximums = (...sources) => {
+  const merged = createEmptyMetrics()
+  METRICS.forEach((metric) => {
+    merged[metric] = Math.max(...sources.map((source) => source?.[metric] || 0))
+  })
+  return merged
+}
+
 const getIdentityStats = async (kv, type, day) => {
   const prefix = `${type}:day:${day}:`
   const keys = await readKvList(kv, prefix)
@@ -121,21 +212,7 @@ const getIdentityStats = async (kv, type, day) => {
     records.set(id, current)
   }))
 
-  const rows = [...records.values()].map((record) => {
-    const processed = sumEvents(record, ['process_success', 'batch_item_success'])
-    const errors = sumEvents(record, ['process_error', 'batch_item_error'])
-    const downloads = sumEvents(record, ['download', 'download_zip'])
-    const score = (record.image_uploaded || 0) + processed + downloads
-    return {
-      ...record,
-      downloads,
-      errors,
-      processed,
-      score,
-    }
-  }).sort((a, b) => b.score - a.score)
-
-  return rows.slice(0, 8)
+  return normalizeIdentityRows(records).slice(0, 8)
 }
 
 const getTodayReturningVisitors = async (kv, days) => {
@@ -174,8 +251,8 @@ const buildAnalysis = ({ today, totals, identityStats }) => {
   const uploads = today.image_uploaded || 0
   const processed = sumEvents(today, ['process_success', 'batch_item_success'])
   const errors = sumEvents(today, ['process_error', 'batch_item_error'])
-  const downloads = sumEvents(today, ['download', 'download_zip'])
-  const zipDownloads = today.download_zip || 0
+  const exportedImages = sumEvents(today, ['download', 'download_zip'])
+  const zipExportedImages = today.download_zip || 0
   const batchSuccess = today.batch_item_success || 0
   const totalProcessed = sumEvents(totals, ['process_success', 'batch_item_success'])
   const totalErrors = sumEvents(totals, ['process_error', 'batch_item_error'])
@@ -184,8 +261,8 @@ const buildAnalysis = ({ today, totals, identityStats }) => {
   const trackedToday = identityStats?.returningVisitors?.trackedToday || 0
 
   const uploadPerVisitor = visitors ? uploads / visitors : 0
-  const downloadPerVisitor = visitors ? downloads / visitors : 0
-  const zipShare = downloads ? zipDownloads / downloads : 0
+  const exportPerVisitor = visitors ? exportedImages / visitors : 0
+  const zipShare = exportedImages ? zipExportedImages / exportedImages : 0
   const processSuccessRate = uploads ? processed / uploads : 0
 
   let riskScore = 0
@@ -193,25 +270,25 @@ const buildAnalysis = ({ today, totals, identityStats }) => {
   else if (uploadPerVisitor >= 20) riskScore += 2
   else if (uploadPerVisitor >= 8) riskScore += 1
 
-  if (downloadPerVisitor >= 50) riskScore += 3
-  else if (downloadPerVisitor >= 20) riskScore += 2
-  else if (downloadPerVisitor >= 8) riskScore += 1
+  if (exportPerVisitor >= 50) riskScore += 3
+  else if (exportPerVisitor >= 20) riskScore += 2
+  else if (exportPerVisitor >= 8) riskScore += 1
 
-  if (zipShare >= 0.8 && zipDownloads >= 20) riskScore += 2
-  else if (zipShare >= 0.5 && zipDownloads >= 10) riskScore += 1
+  if (zipShare >= 0.8 && zipExportedImages >= 20) riskScore += 2
+  else if (zipShare >= 0.5 && zipExportedImages >= 10) riskScore += 1
 
   if (batchSuccess >= 50) riskScore += 2
   else if (batchSuccess >= 10) riskScore += 1
 
   const risk = getRiskLevel(riskScore)
-  const demandSignal = uploads >= 50 && downloads >= 20 && processSuccessRate >= 0.25
-  const likelyBatch = uploadPerVisitor >= 20 || downloadPerVisitor >= 20 || zipShare >= 0.7 || batchSuccess >= 20
-    || (topVisitor && ((topVisitor.image_uploaded || 0) >= 50 || topVisitor.downloads >= 50))
-  const shouldCharge = demandSignal && (likelyBatch || downloads >= processed)
+  const demandSignal = uploads >= 50 && exportedImages >= 20 && processSuccessRate >= 0.25
+  const likelyBatch = uploadPerVisitor >= 20 || exportPerVisitor >= 20 || zipShare >= 0.7 || batchSuccess >= 20
+    || (topVisitor && ((topVisitor.image_uploaded || 0) >= 50 || topVisitor.exportedImages >= 50))
+  const shouldCharge = demandSignal && (likelyBatch || exportedImages >= processed)
   const hasReturningSignal = returning > 0
 
   const summary = likelyBatch
-    ? '今天高度疑似存在批量放大/批量下载行为。部署匿名明细统计后，可以继续观察是否集中在同一个 visitor。'
+    ? '今天高度疑似存在批量放大/批量导出行为。部署匿名明细统计后，可以继续观察是否集中在同一个 visitor。'
     : '今天暂未看到强烈批量使用迹象，更像普通免费试用或低频使用。'
 
   const recommendation = shouldCharge
@@ -219,8 +296,8 @@ const buildAnalysis = ({ today, totals, identityStats }) => {
     : '继续免费观察，同时补充 visitor/session 维度统计，为后续判断回头用户和真实付费意愿做准备。'
 
   const facts = [
-    `平均每位独立访客上传 ${uploadPerVisitor.toFixed(1)} 张，下载 ${downloadPerVisitor.toFixed(1)} 次。`,
-    `ZIP 下载占今日下载 ${percent(zipDownloads, downloads)}，ZIP 数量为 ${formatNumber(zipDownloads)}。`,
+    `平均每位独立访客上传 ${uploadPerVisitor.toFixed(1)} 张，导出 ${exportPerVisitor.toFixed(1)} 张。`,
+    `ZIP 导出图片占今日导出图片 ${percent(zipExportedImages, exportedImages)}，ZIP 内图片数为 ${formatNumber(zipExportedImages)}。`,
     `今日上传到成功处理比例约 ${percent(processed, uploads)}，今日处理错误率 ${percent(errors, processed + errors)}。`,
     `今日识别到 ${formatNumber(trackedToday)} 个匿名访客，其中 ${formatNumber(returning)} 个近 7 天曾来过。`,
     `累计处理错误率 ${percent(totalErrors, totalProcessed + totalErrors)}。`,
@@ -229,12 +306,12 @@ const buildAnalysis = ({ today, totals, identityStats }) => {
   const nextActions = shouldCharge
     ? [
         '暂不取消免费，先把大批量任务放入慢速队列。',
-        '未登录用户保留少量免费次数，ZIP 下载或批量处理提示注册。',
+        '未登录用户保留少量免费次数，ZIP 导出或批量处理提示注册。',
         hasReturningSignal ? '已有回头访客迹象，继续观察是否持续批量使用。' : '继续观察 visitor/session 明细，确认是否为回头用户。',
       ]
     : [
         '继续免费开放，避免过早打断种子用户。',
-        '先记录单个 visitor 的上传、处理、ZIP 下载和隔日回访。',
+        '先记录单个 visitor 的上传、处理、ZIP 导出图片数和隔日回访。',
         '如果连续 2-3 天出现高上传/高 ZIP，再开启软限制。',
       ]
 
@@ -264,8 +341,8 @@ const renderIdentityTable = (title, rows) => `
             <th>上传</th>
             <th>处理成功</th>
             <th>处理失败</th>
-            <th>下载</th>
-            <th>ZIP</th>
+            <th>导出图片</th>
+            <th>ZIP 内图片</th>
           </tr>
         </thead>
         <tbody>
@@ -275,7 +352,7 @@ const renderIdentityTable = (title, rows) => `
               <td><b>${formatNumber(row.image_uploaded)}</b></td>
               <td><b>${formatNumber(row.processed)}</b></td>
               <td>${formatNumber(row.errors)}</td>
-              <td><b>${formatNumber(row.downloads)}</b></td>
+              <td><b>${formatNumber(row.exportedImages)}</b></td>
               <td>${formatNumber(row.download_zip)}</td>
             </tr>
           `).join('') : '<tr><td colspan="6">部署后开始积累匿名明细；目前暂无可展示数据。</td></tr>'}
@@ -326,12 +403,12 @@ const renderAnalysis = (analysis) => `
 
 const renderStatsPage = ({ labels, totals, days, identityStats = {}, configured = true, message = '' }) => {
   const today = getToday(days)
-  const downloadsToday = sumEvents(today, ['download', 'download_zip'])
-  const downloadsTotal = sumEvents(totals, ['download', 'download_zip'])
+  const exportedToday = sumEvents(today, ['download', 'download_zip'])
+  const exportedTotal = sumEvents(totals, ['download', 'download_zip'])
   const processTotal = sumEvents(totals, ['process_success', 'batch_item_success'])
   const processErrors = sumEvents(totals, ['process_error', 'batch_item_error'])
   const uploadMax = getMax(days, ['image_uploaded'])
-  const downloadMax = getMax(days, ['download', 'download_zip'])
+  const exportMax = getMax(days, ['download', 'download_zip'])
   const visitMax = getMax(days, ['page_view'])
   const recentDays = [...days].reverse()
   const analysis = buildAnalysis({ today, totals, identityStats })
@@ -340,15 +417,15 @@ const renderStatsPage = ({ labels, totals, days, identityStats = {}, configured 
     { label: '今日独立访客', value: today.unique_visitor, hint: `访问会话 ${formatNumber(today.session_start)}` },
     { label: '今天浏览', value: today.page_view, hint: `平均浏览 ${today.unique_visitor ? (today.page_view / today.unique_visitor).toFixed(1) : '0'} 次/人` },
     { label: '今天上传', value: today.image_uploaded, hint: `处理成功 ${formatNumber(sumEvents(today, ['process_success', 'batch_item_success']))}` },
-    { label: '今天下载', value: downloadsToday, hint: `ZIP 下载 ${formatNumber(today.download_zip)}` },
+    { label: '今天导出图片', value: exportedToday, hint: `ZIP 内图片 ${formatNumber(today.download_zip)}` },
     { label: '累计独立访客', value: totals.unique_visitor, hint: `累计会话 ${formatNumber(totals.session_start)}` },
     { label: '累计上传', value: totals.image_uploaded, hint: `成功处理 ${formatNumber(processTotal)}` },
-    { label: '累计下载', value: downloadsTotal, hint: `处理错误率 ${percent(processErrors, processTotal + processErrors)}` },
+    { label: '累计导出图片', value: exportedTotal, hint: `处理错误率 ${percent(processErrors, processTotal + processErrors)}` },
   ].map(renderMetricCard).join('')
 
   const tableRows = recentDays.map((day) => {
     const processed = sumEvents(day, ['process_success', 'batch_item_success'])
-    const downloads = sumEvents(day, ['download', 'download_zip'])
+    const exportedImages = sumEvents(day, ['download', 'download_zip'])
     return `
       <tr>
         <td>${day.day}</td>
@@ -357,7 +434,7 @@ const renderStatsPage = ({ labels, totals, days, identityStats = {}, configured 
         <td><b>${formatNumber(day.session_start)}</b></td>
         <td><b>${formatNumber(day.image_uploaded)}</b>${renderBar(day.image_uploaded || 0, uploadMax)}</td>
         <td><b>${formatNumber(processed)}</b></td>
-        <td><b>${formatNumber(downloads)}</b>${renderBar(downloads, downloadMax)}</td>
+        <td><b>${formatNumber(exportedImages)}</b>${renderBar(exportedImages, exportMax)}</td>
       </tr>
     `
   }).join('')
@@ -623,7 +700,7 @@ const renderStatsPage = ({ labels, totals, days, identityStats = {}, configured 
     <header>
       <div>
         <h1>TU Scale 流量统计</h1>
-        <p>按北京时间统计，展示最近 30 天的访问、上传、处理和下载情况。</p>
+        <p>按北京时间统计，展示最近 30 天的访问、上传、处理和导出图片情况。</p>
       </div>
       ${status}
     </header>
@@ -651,7 +728,7 @@ const renderStatsPage = ({ labels, totals, days, identityStats = {}, configured 
               <th>访客粗略值</th>
               <th>上传图片</th>
               <th>处理成功</th>
-              <th>下载</th>
+              <th>导出图片</th>
             </tr>
           </thead>
           <tbody>${tableRows}</tbody>
@@ -679,7 +756,7 @@ const renderStatsPage = ({ labels, totals, days, identityStats = {}, configured 
       </div>
     </section>
 
-    <p class="note">只统计产品事件，不收集图片内容、文件名、邮箱或用户身份。需要原始数据可打开 <a href="?format=json">JSON 版本</a>。</p>
+    <p class="note">口径说明：ZIP 数值表示 ZIP 包内导出的图片数量，不是点击 ZIP 按钮的次数。只统计产品事件，不收集图片内容、文件名、邮箱、用户身份或 IP。需要原始数据可打开 <a href="?format=json">JSON 版本</a>。</p>
   </main>
 </body>
 </html>`
@@ -706,26 +783,50 @@ export async function onRequestGet(context) {
     return wantsHtml && !wantsJson ? html(renderStatsPage(body), 202) : json(body, 202)
   }
 
-  const totals = {}
+  const counterTotals = {}
   await Promise.all(METRICS.map(async (metric) => {
-    totals[metric] = await readCount(kv, `total:${metric}`)
+    counterTotals[metric] = await readCount(kv, `total:${metric}`)
   }))
 
   const days = []
+  const eventLogStatsByDay = {}
   for (let i = 0; i < 30; i++) {
     const day = getChinaDate(i)
-    const values = {}
+    const counterValues = {}
     await Promise.all(METRICS.map(async (metric) => {
-      values[metric] = await readCount(kv, `day:${day}:${metric}`)
+      counterValues[metric] = await readCount(kv, `day:${day}:${metric}`)
     }))
+    const [eventLogStats, visitorTotals] = await Promise.all([
+      getEventLogStats(kv, day),
+      getIdentityTotals(kv, 'visitor', day),
+    ])
+    const values = mergeMetricMaximums(counterValues, visitorTotals, eventLogStats.totals)
+    eventLogStatsByDay[day] = eventLogStats
     days.push({ day, ...values })
   }
 
+  const dayTotals = createEmptyMetrics()
+  days.forEach((day) => {
+    METRICS.forEach((metric) => {
+      dayTotals[metric] += day[metric] || 0
+    })
+  })
+
+  const totalVisitorKeys = await readKvList(kv, 'visitor:total:')
+  const totals = mergeMetricMaximums(counterTotals, dayTotals)
+  totals.unique_visitor = Math.max(counterTotals.unique_visitor || 0, totalVisitorKeys.length)
+
   const today = days[0]?.day
+  const [counterSessions, counterVisitors, returningVisitors] = today ? await Promise.all([
+    getIdentityStats(kv, 'session', today),
+    getIdentityStats(kv, 'visitor', today),
+    getTodayReturningVisitors(kv, days),
+  ]) : [[], [], { returning: 0, trackedToday: 0 }]
+
   const identityStats = today ? {
-    returningVisitors: await getTodayReturningVisitors(kv, days),
-    sessions: await getIdentityStats(kv, 'session', today),
-    visitors: await getIdentityStats(kv, 'visitor', today),
+    returningVisitors,
+    sessions: counterSessions,
+    visitors: counterVisitors,
   } : {
     returningVisitors: { returning: 0, trackedToday: 0 },
     sessions: [],
