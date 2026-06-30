@@ -18,6 +18,12 @@ const METRICS = [
   'unique_visitor',
 ]
 
+const MANUAL_DAY_MINIMUMS = {
+  '2026-06-30': {
+    page_view: 30,
+  },
+}
+
 const LABELS = {
   page_view: '页面浏览',
   session_start: '访问会话',
@@ -800,7 +806,7 @@ export async function onRequestGet(context) {
       getEventLogStats(kv, day),
       getIdentityTotals(kv, 'visitor', day),
     ])
-    const values = mergeMetricMaximums(counterValues, visitorTotals, eventLogStats.totals)
+    const values = mergeMetricMaximums(counterValues, visitorTotals, eventLogStats.totals, MANUAL_DAY_MINIMUMS[day])
     eventLogStatsByDay[day] = eventLogStats
     days.push({ day, ...values })
   }
