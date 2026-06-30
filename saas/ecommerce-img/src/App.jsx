@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
-import { Upload, Download, ZoomIn, Maximize2, Loader2, Sparkles, X, Image as ImageIcon, FolderOpen, CheckCircle, AlertCircle, FileDown, FileImage, Crop, MessageSquare } from 'lucide-react'
+import { Upload, Download, ZoomIn, Maximize2, Loader2, Sparkles, X, Image as ImageIcon, FolderOpen, CheckCircle, AlertCircle, FileDown, FileImage, Crop, MessageSquare, Copy } from 'lucide-react'
 import JSZip from 'jszip'
 import { loadModel, processWithAI, isModelLoaded } from './ai/waifu2x'
 import FormatConverter from './tools/FormatConverter'
@@ -185,18 +185,25 @@ const trackEvent = (event, data = {}) => {
 
 const PAGE_META = {
   '/': {
-    title: 'TU Scale·图片放大 - 免费在线高清图像放大与裁切工具（支持4K/8K）',
-    description: 'TU Scale 免费在线图片放大工具，无需登录即可使用。支持单图/批量放大、拖拽裁切、常用比例预设、智能锐化、4K/8K 分辨率输出，浏览器端处理，不上传服务器。',
+    title: '免费图片放大与批量处理工具 - 本地处理不上传 | TU Scale',
+    description: 'TU Scale 是免费在线图片放大工具，支持单图/批量放大、裁切比例、图片清晰化和格式转换。图片在浏览器本地处理，不上传服务器，无需登录。',
   },
   '/format-converter': {
-    title: '本地图片格式转换 - JPG/PNG/WebP/AVIF 批量转换 | TU Scale',
-    description: 'TU Scale 本地图片格式转换工具，支持 JPG、PNG、WebP、AVIF 等格式批量转换、质量调节和 ZIP 下载，图片在浏览器本地处理。',
+    title: '免费图片格式转换 - JPG/PNG/WebP/AVIF 批量转换 | TU Scale',
+    description: 'TU Scale 免费图片格式转换工具，支持 JPG、PNG、WebP、AVIF 批量转换、质量调节和 ZIP 下载。图片本地处理，不上传服务器。',
   },
   '/contact': {
     title: '反馈与联系 - TU Scale 本地图片工具箱',
-    description: '向 TU Scale 提交功能建议、问题反馈、格式支持请求、批量电商图片处理需求或商务合作意向。',
+    description: '向 TU Scale 提交功能建议、问题反馈、格式支持请求、批量图片处理需求或合作意向。',
   },
 }
+
+const HOME_FAQ = [
+  ['TU Scale 免费吗？', '目前可以免费使用，无需登录，适合临时处理图片、头像、截图和自媒体封面。'],
+  ['图片会上传到服务器吗？', '不会。放大、裁切、格式转换主要在浏览器本地完成，TU Scale 不收集图片内容和文件名。'],
+  ['适合哪些图片？', '适合模糊图片清晰化、头像、封面、截图、网页配图和需要统一尺寸的批量图片。'],
+  ['支持批量处理吗？', '支持多选图片和上传文件夹，处理完成后可以单张下载，也可以打包下载 ZIP。'],
+]
 
  function App() {
   const [route, setRoute] = useState(() => window.location.pathname)
@@ -274,6 +281,7 @@ const PAGE_META = {
   const [imgZoom, setImgZoom] = useState(1)
   const [imgPan, setImgPan] = useState({ x: 0, y: 0 })
   const [isPanning, setIsPanning] = useState(false)
+  const [shareNotice, setShareNotice] = useState('')
     // --- 预加载 AI 模型 ---
     useEffect(() => {
       if (!aiUpscale) {
@@ -396,7 +404,7 @@ const batchItemsRef = useRef([])
         if (k.batchMode) { if (pendingCountRef.current > 0 && !k.batchProcessing) k.handleBatchProcess?.() }
         else if (k.preview && !k.processing) k.handleProcess?.()
       }
-      if (mod && e.key === 'd') {
+      if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault()
         if (k.batchMode && doneCountRef.current > 0) k.downloadAllAsZip?.()
         else if (k.result) k.handleDownload?.()
@@ -1670,19 +1678,33 @@ const batchItemsRef = useRef([])
   const compareDisplayDims = compareSourceDims || sourceDimsForPreview || origDims
   const compareSourceLabel = cropEnabled ? '裁切后原图' : '原图'
 
+  const handleCopyPageLink = useCallback(async () => {
+    const url = window.location.href
+    try {
+      await navigator.clipboard.writeText(url)
+      setShareNotice('页面链接已复制')
+    } catch {
+      setShareNotice('复制失败，可以手动复制浏览器地址栏链接')
+    }
+    setTimeout(() => setShareNotice(''), 2200)
+  }, [])
+
   if (route === '/format-converter') return <FormatConverter navigate={navigate} />
   if (route === '/contact') return <ContactPage navigate={navigate} />
 
  return (
     <div className="min-h-screen bg-gray-50/80">
-      <header className="bg-white/95 backdrop-blur-sm border-b border-gray-100 px-6 py-3 flex items-center gap-2.5 sticky top-0 z-10 shadow-sm">
-        <img src="/logo.png" alt="TU Scale" className="h-12 w-auto shrink-0" />
+      <header className="bg-white/95 backdrop-blur-sm border-b border-gray-100 px-6 py-3 flex items-center gap-4 sticky top-0 z-10 shadow-sm">
+        <img src="/logo.png" alt="TU Scale" className="h-16 sm:h-18 w-auto shrink-0" />
         <div className="flex flex-col min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-base font-bold tracking-tight" style={{ color: '#8040f0' }}>TU Scale</h1>
-            <span className="text-[11px] hidden sm:block truncate leading-none" style={{ color: '#7c3aed' }}>图片放大工具</span>
+          <div className="flex flex-col gap-2 min-w-0">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate" style={{ color: '#8040f0' }}>TU Scale 本地图片工具箱-图片放大工具</h1>
+            <div className="hidden sm:flex flex-wrap gap-2">
+              {['免费使用', '本地处理', '图片不上传', '支持批量', '格式转换'].map(item => (
+                <span key={item} className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-500 shadow-sm">{item}</span>
+              ))}
+            </div>
           </div>
-          <span className="text-[10px] text-gray-400 leading-none">高清放大&middot;智能锐化&middot;支持 4K/8K</span>
         </div>
         <nav className="hidden md:flex items-center gap-1">
           {TOOL_NAV.map(item => (
@@ -1702,6 +1724,12 @@ const batchItemsRef = useRef([])
               className={`px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap ${item.id === 'upscale' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'text-gray-500 border-gray-200 bg-white'}`}>
               {item.label}
             </button>
+          ))}
+        </div>
+
+        <div className="flex sm:hidden flex-wrap gap-2">
+          {['免费使用', '本地处理', '图片不上传', '支持批量', '格式转换'].map(item => (
+            <span key={item} className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-500 shadow-sm">{item}</span>
           ))}
         </div>
 
@@ -2305,6 +2333,20 @@ const batchItemsRef = useRef([])
               className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors">
               <Download className="w-4 h-4" /> {'\u4e0b\u8f7d'}
             </button>
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <CheckCircle className="w-4 h-4 text-gray-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">处理完成，可以收藏下次再用</p>
+                  <p className="text-xs leading-5 text-gray-500">下次还可以继续批量放大、裁切比例和格式转换。</p>
+                </div>
+              </div>
+              <button onClick={handleCopyPageLink}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-100">
+                <Copy className="w-3.5 h-3.5" /> 复制页面链接
+              </button>
+            </div>
+            {shareNotice && <p className="text-xs text-indigo-600">{shareNotice}</p>}
           </div>
         )}
 
@@ -2338,8 +2380,34 @@ const batchItemsRef = useRef([])
                 </div>
               ))}
             </div>
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <CheckCircle className="w-4 h-4 text-gray-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">批量处理完成，可以收藏下次再用</p>
+                  <p className="text-xs leading-5 text-gray-500">复制链接后可以发给自己，或保存到常用笔记里。</p>
+                </div>
+              </div>
+              <button onClick={handleCopyPageLink}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-100">
+                <Copy className="w-3.5 h-3.5" /> 复制页面链接
+              </button>
+            </div>
+            {shareNotice && <p className="text-xs text-indigo-600">{shareNotice}</p>}
           </div>
         )}
+
+        <section className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+          <div>
+            <h2 className="font-semibold text-gray-900 text-sm">常见问题</h2>
+            <p className="text-xs text-gray-500 mt-1">用户最关心的价格、隐私、批量和格式转换。</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {HOME_FAQ.map(([question, answer]) => (
+              <FaqItem key={question} question={question} answer={answer} />
+            ))}
+          </div>
+        </section>
 
         <section className="bg-white border border-gray-200 rounded-xl p-5">
           <div className="flex items-center justify-between gap-3 mb-4">
@@ -2383,13 +2451,13 @@ const batchItemsRef = useRef([])
           <div className="space-y-2">
             <h2 className="text-lg font-semibold text-gray-900">{'\u514d\u8d39\u5728\u7ebf\u56fe\u7247\u653e\u5927\u5de5\u5177'}</h2>
             <p className="text-sm leading-7">
-              TU Scale {'\u662f\u4e00\u4e2a\u6d4f\u89c8\u5668\u7aef\u7684\u56fe\u7247\u653e\u5927\u5de5\u5177\uff0c\u53ef\u4ee5\u5c06 JPG\u3001PNG \u548c WebP \u56fe\u7247\u6309\u500d\u6570\u653e\u5927\uff0c\u4e5f\u53ef\u4ee5\u6309 1080\u7ea7\u30012K\u7ea7\u30014K\u7ea7\u6216 8K\u7ea7\u6e05\u6670\u5ea6\u8f93\u51fa\uff0c\u5e76\u6839\u636e\u539f\u56fe\u6216\u88c1\u5207\u6bd4\u4f8b\u81ea\u52a8\u8ba1\u7b97\u5bbd\u9ad8\u3002\u5b83\u9002\u5408\u5904\u7406\u7535\u5546\u4e3b\u56fe\u3001\u4ea7\u54c1\u56fe\u3001\u5934\u50cf\u3001\u63d2\u753b\u3001\u8001\u7167\u7247\u548c\u9700\u8981\u63d0\u5347\u6e05\u6670\u5ea6\u7684\u7f51\u7ad9\u914d\u56fe\u3002'}
+              TU Scale 是一个浏览器端的图片放大工具，可以将 JPG、PNG 和 WebP 图片按倍数放大，也可以按 1080级、2K级、4K级或 8K级清晰度输出，并根据原图或裁切比例自动计算宽高。它适合处理头像、插画、老照片、截图、封面图和需要提升清晰度的网站配图。
             </p>
             <p className="text-sm leading-7">
               {'\u5de5\u5177\u652f\u6301\u667a\u80fd\u9510\u5316\u3001\u81ea\u52a8\u8272\u9636\u3001\u81ea\u7136\u9971\u548c\u5ea6\u3001\u6297\u952f\u9f7f\u548c AI \u56fe\u7247\u653e\u5927\u3002\u5982\u679c\u9700\u8981\u4e00\u6b21\u5904\u7406\u591a\u5f20\u56fe\u7247\uff0c\u4e5f\u53ef\u4ee5\u4f7f\u7528\u6279\u91cf\u56fe\u7247\u653e\u5927\u6a21\u5f0f\uff0c\u6309\u540c\u4e00\u7ec4\u53c2\u6570\u987a\u5e8f\u751f\u6210\u9ad8\u6e05\u56fe\u7247\u3002'}
             </p>
             <p className="text-sm leading-7">
-              {'\u4e3a\u4e86\u4fdd\u62a4\u9690\u79c1\uff0cTU Scale \u9ed8\u8ba4\u5728\u6d4f\u89c8\u5668\u672c\u5730\u5b8c\u6210\u56fe\u7247\u653e\u5927\u3001\u9510\u5316\u548c\u683c\u5f0f\u8f6c\u6362\u3002\u4f60\u9009\u62e9\u7684\u56fe\u7247\u4e0d\u4f1a\u88ab\u4e0a\u4f20\u5230 TU Scale \u670d\u52a1\u5668\uff0c\u9002\u5408\u5904\u7406\u9700\u8981\u66f4\u5b89\u5fc3\u4fdd\u5b58\u7684\u4e2a\u4eba\u7167\u7247\u548c\u5546\u54c1\u56fe\u7247\u3002'}
+              为了保护隐私，TU Scale 默认在浏览器本地完成图片放大、锐化和格式转换。你选择的图片不会被上传到 TU Scale 服务器，适合处理需要更安心保存的个人照片、头像和普通配图。
             </p>
           </div>
 
@@ -2513,6 +2581,15 @@ const batchItemsRef = useRef([])
           <div className="text-center py-2 text-white/25 text-[11px] shrink-0 bg-black/40">{'\u6eda\u52a8\u67e5\u770b\u7ec6\u8282 \u00b7 \u6ed1\u5757\u7f29\u653e \u00b7 \u8054\u52a8\u6eda\u52a8\u53ef\u5f00\u5173 \u00b7 \u70b9\u51fb\u7a7a\u767d\u5173\u95ed'}</div>
         </div>
       )}
+    </div>
+  )
+}
+
+function FaqItem({ question, answer }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+      <h3 className="text-sm font-semibold text-gray-900">{question}</h3>
+      <p className="text-xs leading-6 text-gray-500 mt-1">{answer}</p>
     </div>
   )
 }

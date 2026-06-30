@@ -11,6 +11,13 @@ const FEEDBACK_TYPES = [
 
 const CONTACT_EMAIL = '994815006@qq.com'
 
+const CONTACT_FAQ = [
+  ['反馈会自动发送吗？', '不会。浏览器不能替你直接发邮件，可以复制反馈内容，或尝试打开本机邮件 App 后发送。'],
+  ['需要留下联系方式吗？', '不强制。普通建议可以不填；如果希望我回复或讨论合作，再留下邮箱、微信或其他联系方式。'],
+  ['可以提哪些需求？', '可以提图片压缩、批量尺寸、裁切比例、抠图换背景、更多格式支持、处理失败等问题。'],
+  ['商务或批量处理怎么联系？', '选择“商务合作”，写清楚图片数量、平台要求、交付格式和时间，我会按需求判断是否适合做定制。'],
+]
+
 export default function ContactPage({ navigate }) {
   const [type, setType] = useState('feature')
   const [message, setMessage] = useState('')
@@ -60,7 +67,7 @@ export default function ContactPage({ navigate }) {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h1 className="text-xl font-bold text-gray-900">反馈与联系</h1>
-              <p className="text-sm text-gray-500 mt-1">告诉我你想要什么功能、哪里不好用，或者是否需要批量商品图处理合作。</p>
+              <p className="text-sm text-gray-500 mt-1">告诉我你想要什么功能、哪里不好用，或者是否需要批量图片处理合作。</p>
             </div>
             <button onClick={copyEmail}
               className="inline-flex items-center gap-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2 hover:bg-indigo-100">
@@ -90,7 +97,7 @@ export default function ContactPage({ navigate }) {
                 <span className="text-sm font-semibold text-gray-800">你的反馈</span>
                 <textarea value={message} onChange={(event) => setMessage(event.target.value)}
                   rows={9}
-                  placeholder="例如：希望增加批量压缩到 2MB 以下、支持 PSD 预览导出、电商图增加抠图换背景、某个浏览器转换失败..."
+                  placeholder="例如：希望增加批量压缩到 2MB 以下、支持 PSD 预览导出、增加抠图换背景、某个浏览器转换失败..."
                   className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm leading-6 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 resize-y" />
               </label>
               <label className="block space-y-2">
@@ -117,9 +124,9 @@ export default function ContactPage({ navigate }) {
             <aside className="border border-gray-200 rounded-xl bg-gray-50 p-4 space-y-3">
               <h2 className="text-sm font-semibold text-gray-900">我最想知道这些</h2>
               <ul className="space-y-2 text-xs leading-6 text-gray-600">
-                <li>你是做电商、自媒体，还是临时处理图片？</li>
+                <li>你是做自媒体、网站配图，还是临时处理图片？</li>
                 <li>哪个格式、尺寸或平台预设最常用？</li>
-                <li>商品图规范化哪里不够顺手，尺寸或裁切是否准确？</li>
+                <li>批量尺寸、裁切比例或格式转换哪里不够顺手？</li>
                 <li>你愿意为什么高级功能付费？批量、抠图、换背景，还是更强 AI？</li>
               </ul>
               <div className="border-t border-gray-200 pt-3">
@@ -132,7 +139,19 @@ export default function ContactPage({ navigate }) {
         <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <InfoCard title="功能建议" text="告诉我你希望增加哪些图片工具，比如压缩、裁剪、抠图、换背景或格式支持。" />
           <InfoCard title="问题报告" text="如果某种图片无法读取、转换失败、下载失败，可以描述浏览器和图片格式。" />
-          <InfoCard title="合作需求" text="如果你有批量商品图处理、店铺图片规范化或定制工具需求，可以先留下联系方式。" />
+          <InfoCard title="合作需求" text="如果你有批量图片处理、固定尺寸导出或定制工具需求，可以先留下联系方式。" />
+        </section>
+
+        <section className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">常见问题</h2>
+            <p className="text-xs text-gray-500 mt-1">关于反馈、隐私和合作沟通。</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {CONTACT_FAQ.map(([question, answer]) => (
+              <InfoCard key={question} title={question} text={answer} />
+            ))}
+          </div>
         </section>
       </main>
       <RewardButton />
@@ -157,12 +176,14 @@ function ToolHeader({ active, navigate }) {
   ]
 
   return (
-    <header className="bg-white/95 backdrop-blur-sm border-b border-gray-100 px-5 py-3 sticky top-0 z-10 shadow-sm">
-      <div className="max-w-6xl mx-auto flex items-center gap-3">
-        <img src="/logo.png" alt="TU Scale" className="h-10 w-auto shrink-0" />
-        <div className="min-w-0 mr-auto">
-          <div className="text-base font-bold tracking-tight" style={{ color: '#8040f0' }}>TU Scale</div>
-          <div className="text-[10px] text-gray-400 leading-none">本地图片工具箱</div>
+    <header className="bg-white/95 backdrop-blur-sm border-b border-gray-100 px-6 py-3 sticky top-0 z-10 shadow-sm">
+      <div className="max-w-6xl mx-auto flex items-center gap-4">
+        <img src="/logo.png" alt="TU Scale" className="h-16 sm:h-18 w-auto shrink-0" />
+        <div className="flex flex-col min-w-0 mr-auto">
+          <div className="flex flex-col gap-2 min-w-0">
+            <div className="text-lg sm:text-xl font-bold tracking-tight" style={{ color: '#8040f0' }}>TU Scale</div>
+            <div className="text-[10px] text-gray-400 leading-none">本地图片工具箱</div>
+          </div>
         </div>
         <nav className="flex items-center gap-1 overflow-x-auto">
           {items.map(item => (
